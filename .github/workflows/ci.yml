@@ -105,6 +105,10 @@ jobs:
           POSTGRES_USERNAME: gymsoins
           POSTGRES_PASSWORD: gymsoins
           POSTGRES_DATABASE: gymsoins_ci
+          APP_DB_USER: gymsoins_app
+          APP_DB_PASSWORD: e2e-app-runtime-password-2026
+          WORKER_DB_USER: gymsoins_worker
+          WORKER_DB_PASSWORD: e2e-worker-runtime-password-2026
         run: npm run verify:otel
 
       - name: Retention worker smoke
@@ -121,6 +125,8 @@ jobs:
           RETENTION_PURGE_ENABLED: true
           RETENTION_PURGE_INTERVAL_MS: 1000
           RETENTION_WORKER_HEALTH_PORT: 3103
+          RETENTION_DB_USER: gymsoins_retention
+          RETENTION_DB_PASSWORD: e2e-retention-runtime-password-2026
         run: |
           node dist/retention-worker.js > /tmp/retention-ci.log 2>&1 &
           echo $! > /tmp/retention-ci.pid
@@ -146,11 +152,14 @@ jobs:
           POSTGRES_DATABASE: gymsoins_ci
           JWT_SECRET: ci-jwt-secret-change-me
           LICENSE_DEV_MODE: true
-          OUTBOX_WORKER_ENABLED: true
+          OUTBOX_WORKER_ENABLED: false
           OUTBOX_POLL_INTERVAL_MS: 500
           RETENTION_PURGE_ENABLED: false
           THROTTLE_LIMIT: 100000
+          POSTGRES_RUNTIME_USERNAME: gymsoins_app
+          POSTGRES_RUNTIME_PASSWORD: e2e-app-runtime-password-2026
           SSE_VERIFY_BASE_URL: http://127.0.0.1:3105/api/v1
+          RLS_SMOKE_BASE_URL: http://127.0.0.1:3105/api/v1
         run: |
           node dist/main.js > /tmp/kds-sse-ci.log 2>&1 &
           echo $! > /tmp/kds-sse-ci.pid
@@ -161,6 +170,7 @@ jobs:
             sleep 1
           done
           npm run verify:kds-sse
+          npm run verify:app-rls
           kill -TERM "$(cat /tmp/kds-sse-ci.pid)"
           wait "$(cat /tmp/kds-sse-ci.pid)" || true
 

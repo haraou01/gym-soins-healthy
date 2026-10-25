@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes, createHash } from 'node:crypto';
-import { MoreThan, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 
 import { KdsStreamTicket } from '../entities/kds-stream-ticket.entity';
 
@@ -48,28 +48,17 @@ export class KdsStreamTicketService {
       return null;
     }
 
-    const ticket = await this.ticketRepository.findOne({
-      where: {
-        tokenHash: this.hash(token.trim()),
-        usedAt: null,
-        expiresAt: MoreThan(new Date()),
-      },
-    });
+    // Fonction SECURITY DEFINER contrôlée : la consommation du ticket est le
+    // seul accès cross-tenant à cette table avant d'avoir un contexte tenant.
+    const rows = await this.ticketRepository.manager.query(
+      `SELECT "userId", role, "tenantId"
+       FROM consume_kds_stream_ticket($1)`,
+      [this.hash(token.trim())],
+    );
+
+    const ticket = rows[0];
 
     if (!ticket) {
-      return null;
-    }
-
-    const result = await this.ticketRepository
-      .createQueryBuilder()
-      .update(KdsStreamTicket)
-      .set({ usedAt: new Date() })
-      .where('id = :id AND "usedAt" IS NULL AND "expiresAt" > NOW()', {
-        id: ticket.id,
-      })
-      .execute();
-
-    if (!result.affected) {
       return null;
     }
 

@@ -199,21 +199,26 @@ Toutes les données historiques sont assignées au tenant legacy. Les anciennes
 structures et colonnes sont conservées. Le mapping est contrôlé par comptage
 avant/après.
 
-## 10. RLS PostgreSQL — évaluation
+## 10. RLS PostgreSQL — Phase 5
 
-RLS n'a pas été activé dans cette étape.
+RLS est activé sur les 21 tables tenant-owned avec `FORCE ROW LEVEL SECURITY`.
 
-Raisons :
+Le pont SQL est explicite :
 
-- TypeORM utilise un pool de connexions partagées ;
-- `SET LOCAL app.tenant_id` exige un QueryRunner/contexte transactionnel par
-  requête, ce que l'application n'impose pas uniformément ;
-- un `SET` de session non réinitialisé pourrait fuiter entre tenants ;
-- l'activer sans ce contexte casserait toutes les requêtes.
+- `src/core/database/rls-query-guard.ts` lit le tenant depuis
+  AsyncLocalStorage ;
+- `set_config('app.tenant_id', ..., true)` est exécuté dans la transaction ;
+- une requête hors transaction est enveloppée dans
+  `BEGIN / SET LOCAL / query / COMMIT` sur la même connexion ;
+- aucun `SET` de session n'est utilisé ;
+- le runtime utilise `gymsoins_app`, le worker `gymsoins_worker`, la rétention
+  `gymsoins_retention`, tous non superuser/non BYPASSRLS.
 
-Décision : scoping applicatif explicite + contraintes tenant + tests négatifs
-réels. La protection contre un accès SQL direct hors application n'est pas
-assurée. C'est un risque résiduel documenté.
+Les accès SQL directs du rôle runtime aux lignes d'un autre tenant sont
+refusés. Le rôle propriétaire/migration contourne RLS pour les migrations, mais
+n'est jamais utilisé par l'API.
+
+Détails : `docs/architecture/rls-design.md`.
 
 ## 11. Frontend
 

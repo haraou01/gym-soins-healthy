@@ -268,10 +268,15 @@ Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise Postg
 - Aucun `tenantId` client n'est accepté comme autorité ; le contexte vient du JWT et de l'adhésion vérifiée en base à chaque requête.
 - Toutes les données métier, l'Outbox, l'idempotence et les tickets SSE sont tenant-scoped.
 - `settings` reste global (branding/configuration de déploiement).
-- RLS n'est pas activé ; les accès SQL directs hors application ne sont pas protégés. Voir le risque documenté.
+- RLS PostgreSQL est activé sur les 21 tables tenant-owned, avec `FORCE ROW LEVEL SECURITY`.
+- Rôles runtime : `gymsoins_app`, `gymsoins_worker`, `gymsoins_retention` (non superuser, non BYPASSRLS).
+- Le contexte SQL est positionné par transaction via `set_config('app.tenant_id', ..., true)` ; aucun `SET` de session.
+- Bootstrap des mots de passe : `npm run bootstrap:db-roles` avec `APP_DB_PASSWORD`, `WORKER_DB_PASSWORD`, `RETENTION_DB_PASSWORD`.
+- Design RLS : `docs/architecture/rls-design.md`.
 - Audit : `docs/architecture/multi-tenant-audit.md`.
 - Design : `docs/architecture/multi-tenant-design.md`.
-- Matrice de validation : `docs/operations/phase-4-validation-matrix.md`.
+- Matrice Phase 4 : `docs/operations/phase-4-validation-matrix.md`.
+- Matrice Phase 5 : `docs/operations/phase-5-validation-matrix.md`.
 
 ### KDS temps réel
 
@@ -282,6 +287,8 @@ Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise Postg
 - Reconnexion client avec backoff et nouveau ticket.
 - Isolation tenant du ticket et du flux SSE.
 - Preuve reproductible : `npm run verify:kds-sse` (API locale en cours d'exécution).
+- UI navigateur : `npm run verify:ui` (Chrome + `playwright-core`, Vite local).
+- Smoke RLS tous modules : `npm run verify:app-rls`.
 - Fallback polling 10 s si SSE indisponible.
 - PostgreSQL reste la source de vérité ; le SSE ne fait que notifier.
 - Métriques : `kds_sse_connections_total`, `kds_sse_disconnects_total`, `kds_sse_active_connections`, `kds_events_published_total`, `kds_poll_errors_total`.
@@ -364,6 +371,8 @@ Le contrôle `npm run audit:secrets` vérifie les fichiers versionnés. Il est e
 - `docs/architecture/multi-tenant-design.md` — modèle et décisions.
 - `docs/operations/phase-4-validation-matrix.md` — preuves et statuts honnêtes.
 - `docs/operations/staging-runbook.md` — runbook staging et blocages externes.
+- `docs/architecture/rls-design.md` — rôles, policies, contexte SQL et limites.
+- `docs/operations/phase-5-validation-matrix.md` — preuves RLS/UI/SSE/charge Phase 5.
 
 ## Notes de sécurité
 

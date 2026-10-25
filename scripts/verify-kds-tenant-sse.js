@@ -1,4 +1,5 @@
 /* eslint-disable no-console */
+const { createHash } = require('node:crypto');
 const { Client } = require('pg');
 
 const API = (
@@ -106,6 +107,27 @@ async function waitEvent(client, type, timeout = 10_000) {
   throw new Error(
     `Timeout ${type}; reçu: ${client.events.map((event) => event.eventType).join(',')}`,
   );
+}
+
+async function expireTicket(token) {
+  const client = new Client({
+    host: process.env.POSTGRES_HOST || '127.0.0.1',
+    port: Number(process.env.POSTGRES_PORT || 55432),
+    user: process.env.POSTGRES_USERNAME || 'gymsoins',
+    password: process.env.POSTGRES_PASSWORD || 'gymsoins',
+    database: process.env.POSTGRES_DATABASE || 'gymsoins_test',
+  });
+  await client.connect();
+  try {
+    await client.query(
+      `UPDATE kds_stream_tickets
+       SET "expiresAt" = NOW() - INTERVAL '1 second'
+       WHERE "tokenHash" = $1`,
+      [createHash('sha256').update(token).digest('hex')],
+    );
+  } finally {
+    await client.end();
+  }
 }
 
 async function cleanup({ tenantIds, orderIds, dishIds, ingredientIds }) {
@@ -252,8 +274,10 @@ async function main() {
     const dishA = await makeFood(tenantA);
     const dishB = await makeFood(tenantB);
 
-    clientA = await openSse(await ticket(tenantA));
-    clientB = await openSse(await ticket(tenantB));
+    const ticketA = await ticket(tenantA);
+    const ticketB = await ticket(tenantB);
+    clientA = await openSse(ticketA);
+    clientB = await openSse(ticketB);
     await waitEvent(clientA, 'resync');
     await waitEvent(clientB, 'resync');
 
@@ -297,6 +321,61 @@ async function main() {
         event.payload?.orderId === orderB,
     );
 
+    // Un ancien ticket déjà consommé ne doit pas être réutilisable.
+    const reused = await fetch(
+      `${API}/healthy-food/kds/stream?ticket=${encodeURIComponent(ticketA)}`,
+    );
+    const reuseRejected = reused.status === 401;
+
+    // Ticket expiré : refus explicite.
+    const expiringTicket = await ticket(tenantA);
+    await expireTicket(expiringTicket);
+    const expired = await fetch(
+      `${API}/healthy-food/kds/stream?ticket=${encodeURIComponent(expiringTicket)}`,
+    );
+    const expiredRejected = expired.status === 401;
+
+    // Fallback REST : mêmes garanties d'isolation que SSE.
+    const listA = await api('/healthy-food/orders', {
+      headers: auth(tenantA),
+    });
+    const listB = await api('/healthy-food/orders', {
+      headers: auth(tenantB),
+    });
+    const pollingIsolation =
+      listA.status === 200 &&
+      listB.status === 200 &&
+      !listA.body.some((order) => order.id === orderB) &&
+      !listB.body.some((order) => order.id === orderA);
+
+    // Reconnexion après fermeture, nouveau ticket et resynchronisation.
+    clientA.controller.abort();
+    clientB.controller.abort();
+    await sleep(300);
+
+    const reconnectA = await openSse(await ticket(tenantA));
+    const reconnectB = await openSse(await ticket(tenantB));
+    await waitEvent(reconnectA, 'resync');
+    await waitEvent(reconnectB, 'resync');
+
+    const orderA2 = await createOrder(tenantA, dishA, 3);
+    const eventA2 = await waitEvent(reconnectA, 'kitchen.order.created');
+    await sleep(600);
+    const reconnectBLeak = reconnectB.events.some(
+      (event) =>
+        event.eventType === 'kitchen.order.created' &&
+        event.payload?.orderId === orderA2,
+    );
+
+    const orderB2 = await createOrder(tenantB, dishB, 4);
+    const eventB2 = await waitEvent(reconnectB, 'kitchen.order.created');
+    await sleep(600);
+    const reconnectALeak = reconnectA.events.some(
+      (event) =>
+        event.eventType === 'kitchen.order.created' &&
+        event.payload?.orderId === orderB2,
+    );
+
     const result = {
       event: 'kds.sse.tenant_isolation.verified',
       tenantA: tenantA.tenant.id,
@@ -307,12 +386,37 @@ async function main() {
       bReceivedA,
       bReceivedB: eventB.payload?.orderId === orderB,
       aReceivedB,
+      reuseRejected,
+      expiredRejected,
+      pollingIsolation,
+      reconnect: {
+        aReceivedA: eventA2.payload?.orderId === orderA2,
+        bReceivedB: eventB2.payload?.orderId === orderB2,
+        aReceivedB: reconnectALeak,
+        bReceivedA: reconnectBLeak,
+      },
       traceIds: [eventA.traceId, eventB.traceId],
     };
 
-    if (bReceivedA || aReceivedB || result.aReceivedA !== true || result.bReceivedB !== true) {
+    if (
+      bReceivedA ||
+      aReceivedB ||
+      !result.aReceivedA ||
+      !result.bReceivedB ||
+      !reuseRejected ||
+      !expiredRejected ||
+      !pollingIsolation ||
+      !result.reconnect.aReceivedA ||
+      !result.reconnect.bReceivedB ||
+      result.reconnect.aReceivedB ||
+      result.reconnect.bReceivedA
+    ) {
       throw new Error(`Isolation SSE échouée: ${JSON.stringify(result)}`);
     }
+
+    reconnectA.controller.abort();
+    reconnectB.controller.abort();
+    await sleep(200);
 
     console.log(JSON.stringify(result, null, 2));
   } finally {

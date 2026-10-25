@@ -11,6 +11,13 @@ export const TEST_RECEPTIONIST_EMAIL = 'receptionist.e2e@gymsoins.local';
 export const TEST_RECEPTIONIST_PASSWORD = 'ReceptionistE2E123!';
 export const TEST_RECEPTIONIST_ROLE = 'RECEPTIONIST';
 
+export const TEST_RUNTIME_USER = 'gymsoins_app';
+export const TEST_RUNTIME_PASSWORD = 'e2e-app-runtime-password-2026';
+export const TEST_WORKER_USER = 'gymsoins_worker';
+export const TEST_WORKER_PASSWORD = 'e2e-worker-runtime-password-2026';
+export const TEST_RETENTION_USER = 'gymsoins_retention';
+export const TEST_RETENTION_PASSWORD = 'e2e-retention-runtime-password-2026';
+
 export const TEST_JWT_SECRET = 'e2e-jwt-secret-do-not-use-in-production';
 export const TEST_LICENSE_SECRET = 'e2e-license-secret-do-not-use-in-production';
 
@@ -21,6 +28,12 @@ export interface TestDatabaseSettings {
   password: string;
   adminDatabase: string;
   database: string;
+  runtimeUser: string;
+  runtimePassword: string;
+  workerUser: string;
+  workerPassword: string;
+  retentionUser: string;
+  retentionPassword: string;
 }
 
 const SAFE_IDENTIFIER = /^[A-Za-z0-9_]+$/;
@@ -33,6 +46,16 @@ export function getTestDatabaseSettings(): TestDatabaseSettings {
     password: process.env.TEST_PG_PASSWORD ?? 'gymsoins',
     adminDatabase: process.env.TEST_PG_ADMIN_DB ?? 'postgres',
     database: process.env.TEST_PG_DATABASE ?? 'gymsoins_test',
+    runtimeUser: process.env.TEST_PG_RUNTIME_USER ?? TEST_RUNTIME_USER,
+    runtimePassword:
+      process.env.TEST_PG_RUNTIME_PASSWORD ?? TEST_RUNTIME_PASSWORD,
+    workerUser: process.env.TEST_PG_WORKER_USER ?? TEST_WORKER_USER,
+    workerPassword:
+      process.env.TEST_PG_WORKER_PASSWORD ?? TEST_WORKER_PASSWORD,
+    retentionUser:
+      process.env.TEST_PG_RETENTION_USER ?? TEST_RETENTION_USER,
+    retentionPassword:
+      process.env.TEST_PG_RETENTION_PASSWORD ?? TEST_RETENTION_PASSWORD,
   };
 }
 
@@ -108,6 +131,7 @@ export async function resetTestDatabase(
 
   try {
     await runMigrations(client);
+    await ensureRuntimeRoles(client, settings);
     await seedRolesAndAdmin(client);
   } finally {
     await client.end();
@@ -135,6 +159,39 @@ async function runMigrations(client: Client): Promise<void> {
        ON CONFLICT (name) DO NOTHING`,
       [migration],
     );
+  }
+}
+
+async function ensureRuntimeRoles(
+  client: Client,
+  settings: TestDatabaseSettings,
+): Promise<void> {
+  const roles = [
+    [settings.runtimeUser, settings.runtimePassword],
+    [settings.workerUser, settings.workerPassword],
+    [settings.retentionUser, settings.retentionPassword],
+  ] as const;
+
+  for (const [role, password] of roles) {
+    if (!/^[a-z_][a-z0-9_]*$/.test(role)) {
+      throw new Error(`Nom de rôle runtime invalide : ${role}`);
+    }
+
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN
+          CREATE ROLE ${role} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+        END IF;
+      END
+      $$;
+    `);
+
+    const alter = await client.query(
+      `SELECT format('ALTER ROLE %I LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD %L', $1::text, $2::text) AS sql`,
+      [role, password],
+    );
+    await client.query(alter.rows[0].sql);
   }
 }
 

@@ -1,15 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 
-import { OutboxService } from '../outbox';
 import { metrics } from './metrics.registry';
 
 @Injectable()
 export class MetricsService {
-  constructor(
-    private readonly dataSource: DataSource,
-    private readonly outboxService: OutboxService,
-  ) {}
+  constructor(private readonly dataSource: DataSource) {}
 
   async render(): Promise<string> {
     const lines = [metrics.render()];
@@ -76,11 +72,23 @@ export class MetricsService {
     }
 
     try {
-      const outbox = await this.outboxService.getStats();
-      lines.push(`outbox_events{status="PENDING"} ${outbox.PENDING}`);
-      lines.push(`outbox_events{status="PROCESSING"} ${outbox.PROCESSING}`);
-      lines.push(`outbox_events{status="PROCESSED"} ${outbox.PROCESSED}`);
-      lines.push(`outbox_events{status="FAILED"} ${outbox.FAILED}`);
+      const rows: Array<{ status: string; count: string }> =
+        await this.dataSource.query('SELECT status, count FROM outbox_stats_global()');
+      const stats: Record<string, number> = {
+        PENDING: 0,
+        PROCESSING: 0,
+        PROCESSED: 0,
+        FAILED: 0,
+      };
+
+      for (const row of rows) {
+        stats[row.status] = Number(row.count);
+      }
+
+      lines.push(`outbox_events{status="PENDING"} ${stats.PENDING}`);
+      lines.push(`outbox_events{status="PROCESSING"} ${stats.PROCESSING}`);
+      lines.push(`outbox_events{status="PROCESSED"} ${stats.PROCESSED}`);
+      lines.push(`outbox_events{status="FAILED"} ${stats.FAILED}`);
     } catch {
       lines.push('outbox_metrics_available 0');
     }

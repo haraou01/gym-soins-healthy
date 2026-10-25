@@ -23,6 +23,14 @@ function commonEnv(serviceName) {
     POSTGRES_PORT: process.env.POSTGRES_PORT || '55432',
     POSTGRES_USERNAME: process.env.POSTGRES_USERNAME || 'gymsoins',
     POSTGRES_PASSWORD: process.env.POSTGRES_PASSWORD || 'gymsoins',
+    POSTGRES_RUNTIME_USERNAME:
+      process.env.APP_DB_USER || 'gymsoins_app',
+    POSTGRES_RUNTIME_PASSWORD:
+      process.env.APP_DB_PASSWORD ||
+      process.env.POSTGRES_RUNTIME_PASSWORD ||
+      '',
+    WORKER_DB_USERNAME: process.env.WORKER_DB_USER || 'gymsoins_worker',
+    WORKER_DB_PASSWORD: process.env.WORKER_DB_PASSWORD || '',
     POSTGRES_DATABASE: process.env.POSTGRES_DATABASE || 'gymsoins_test',
     JWT_SECRET: process.env.JWT_SECRET || 'dev-jwt-secret-change-me',
     LICENSE_SECRET:

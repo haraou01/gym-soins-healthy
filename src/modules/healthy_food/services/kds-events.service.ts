@@ -139,20 +139,9 @@ export class KdsEventsService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const rows: OutboxRealtimeRow[] = await this.dataSource.query(
-        `
-          SELECT "id", "tenantId", "eventType", payload, "traceId", "processedAt"
-          FROM "outbox_events"
-          WHERE "status" = 'PROCESSED'
-            AND "eventType" IN ($1, $2)
-            AND "processedAt" >= $3
-          ORDER BY "processedAt" ASC, "id" ASC
-          LIMIT 100
-        `,
-        [
-          KITCHEN_ORDER_CREATED_EVENT,
-          KITCHEN_ORDER_STATUS_CHANGED_EVENT,
-          this.cursor,
-        ],
+        `SELECT "id", "tenantId", "eventType", payload, "traceId", "processedAt"
+         FROM list_kds_outbox_events($1, 100)`,
+        [this.cursor],
       );
 
       for (const row of rows) {

@@ -21,6 +21,10 @@ import { shutdownTelemetry } from './core/telemetry';
  */
 async function bootstrap(): Promise<void> {
   process.env.OUTBOX_WORKER_ENABLED = 'true';
+  process.env.POSTGRES_RUNTIME_USERNAME =
+    process.env.WORKER_DB_USERNAME || 'gymsoins_worker';
+  process.env.POSTGRES_RUNTIME_PASSWORD =
+    process.env.WORKER_DB_PASSWORD || '';
 
   const app: INestApplicationContext =
     await NestFactory.createApplicationContext(AppModule, {

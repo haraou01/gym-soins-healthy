@@ -40,6 +40,12 @@ jobs:
       POSTGRES_USERNAME: gymsoins
       POSTGRES_PASSWORD: gymsoins
       POSTGRES_DATABASE: gymsoins_backup_source
+      POSTGRES_RUNTIME_USERNAME: gymsoins_app
+      POSTGRES_RUNTIME_PASSWORD: e2e-app-runtime-password-2026
+      WORKER_DB_USERNAME: gymsoins_worker
+      WORKER_DB_PASSWORD: e2e-worker-runtime-password-2026
+      RETENTION_DB_USERNAME: gymsoins_retention
+      RETENTION_DB_PASSWORD: e2e-retention-runtime-password-2026
       JWT_SECRET: restore-ci-jwt-secret-change-me
       LICENSE_SECRET: restore-ci-license-secret-change-me
       LICENSE_DEV_MODE: true

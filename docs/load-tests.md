@@ -188,3 +188,50 @@ db_locks{waiting} : 0
 - Les débits Booking/Shop/KDS sont inférieurs à la mesure Phase 3.
 - Aucun lock en attente en fin de test.
 - Le multi-tenant concurrent A/B et multi-instance reste **NOT-TESTED**.
+
+---
+
+## Phase 5 — charge multi-tenant A/B sous RLS
+
+Cette mesure utilise deux tenants réels, deux JWT distincts et le rôle runtime
+`gymsoins_app` avec RLS actif. Une seule instance API et une seule instance
+PostgreSQL sont utilisées.
+
+Commande :
+
+```bash
+LOAD_MULTI_REQUESTS=100 LOAD_MULTI_CONCURRENCY=25 npm run load:test:multi
+```
+
+| Scénario | Req./tenant | Conc. | Throughput | p50 | p95 | p99 | Erreurs |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Shop A | 100 | 25 | 43,40 req/s | 541 ms | 708 ms | 750 ms | 0 |
+| Shop B | 100 | 25 | 41,86 req/s | 509 ms | 955 ms | 1166 ms | 0 |
+| Booking A | 100 | 25 | 175,75 req/s | 141 ms | 152 ms | 155 ms | 0 |
+| Booking B | 100 | 25 | 164,74 req/s | 148 ms | 178 ms | 198 ms | 0 |
+| KDS orders A | 100 | 25 | 59,35 req/s | 401 ms | 519 ms | 527 ms | 0 |
+| KDS orders B | 100 | 25 | 58,48 req/s | 399 ms | 568 ms | 626 ms | 0 |
+| KDS status A | 100 | 25 | 105,49 req/s | 229 ms | 259 ms | 263 ms | 0 |
+| KDS status B | 100 | 25 | 104,17 req/s | 236 ms | 264 ms | 270 ms | 0 |
+
+Intégrité :
+
+```text
+Produits A/B : 0 ligne avec tenant inattendu
+Ventes : 0 ligne avec tenant inattendu
+Bookings : 0 ligne avec tenant inattendu
+Kitchen orders : 0 ligne avec tenant inattendu
+Outbox : 0 ligne avec tenant inattendu
+Outbox PROCESSED : 600
+mismatches : 0
+```
+
+La même clé d'idempotence est utilisée dans A et B pour chaque index Shop :
+les ventes restent distinctes par tenant.
+
+Limites :
+
+- une seule instance API ;
+- pas de test multi-processus / rolling restart ;
+- pas de proxy/TLS ;
+- résultats locaux non extrapolables.

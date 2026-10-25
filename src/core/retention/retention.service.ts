@@ -54,26 +54,13 @@ export class RetentionService {
     let totalDeleted = 0;
 
     for (let batch = 0; batch < this.maxBatches; batch += 1) {
+      // SECURITY DEFINER : nécessaire car le runtime app est sous RLS.
       const result = await this.dataSource.query(
-        `
-          WITH expired AS (
-            SELECT "id"
-            FROM "idempotency_keys"
-            WHERE "status" = 'COMPLETED'
-              AND "createdAt" < $1
-            ORDER BY "createdAt" ASC
-            LIMIT $2
-            FOR UPDATE SKIP LOCKED
-          )
-          DELETE FROM "idempotency_keys" key
-          USING expired
-          WHERE key."id" = expired."id"
-          RETURNING key."id"
-        `,
+        'SELECT purge_idempotency_batch($1, $2)::int AS deleted',
         [cutoff, this.idempotencyBatchSize],
       );
 
-      const deleted = this.extractRows(result).length;
+      const deleted = Number(result[0]?.deleted ?? 0);
       totalDeleted += deleted;
 
       if (deleted < this.idempotencyBatchSize) {
@@ -116,26 +103,11 @@ export class RetentionService {
 
     for (let batch = 0; batch < this.maxBatches; batch += 1) {
       const result = await this.dataSource.query(
-        `
-          WITH expired AS (
-            SELECT "id"
-            FROM "outbox_events"
-            WHERE "status" = 'PROCESSED'
-              AND "processedAt" IS NOT NULL
-              AND "processedAt" < $1
-            ORDER BY "processedAt" ASC
-            LIMIT $2
-            FOR UPDATE SKIP LOCKED
-          )
-          DELETE FROM "outbox_events" event
-          USING expired
-          WHERE event."id" = expired."id"
-          RETURNING event."id"
-        `,
+        'SELECT purge_outbox_batch($1, $2)::int AS deleted',
         [cutoff, this.outboxBatchSize],
       );
 
-      const deleted = this.extractRows(result).length;
+      const deleted = Number(result[0]?.deleted ?? 0);
       totalDeleted += deleted;
 
       if (deleted < this.outboxBatchSize) {

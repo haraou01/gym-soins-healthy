@@ -34,6 +34,9 @@ Statut : **BLOCKED-EXTERNAL**. Aucun déploiement n'a été simulé.
 | `STAGING_METRICS_TOKEN` | scrape Prometheus |
 | `STAGING_OTLP_ENDPOINT` | collecteur OTLP |
 | `STAGING_CORS_ORIGINS` | frontend staging |
+| `STAGING_APP_DB_PASSWORD` | rôle runtime `gymsoins_app` |
+| `STAGING_WORKER_DB_PASSWORD` | rôle `gymsoins_worker` |
+| `STAGING_RETENTION_DB_PASSWORD` | rôle `gymsoins_retention` |
 
 Ne jamais committer ces valeurs.
 
@@ -59,8 +62,15 @@ Ne jamais committer ces valeurs.
 
 ```bash
 npm run db:migrate
+APP_DB_PASSWORD="$STAGING_APP_DB_PASSWORD" \
+WORKER_DB_PASSWORD="$STAGING_WORKER_DB_PASSWORD" \
+RETENTION_DB_PASSWORD="$STAGING_RETENTION_DB_PASSWORD" \
+npm run bootstrap:db-roles
 npm run db:migrate   # doit appliquer 0 migration
 ```
+
+L'API et les workers doivent utiliser les rôles runtime RLS, jamais le rôle
+propriétaire/migration.
 
 La migration ne doit jamais être lancée automatiquement sur production.
 
@@ -80,6 +90,7 @@ Créer deux tenants A et B via l'API staging, puis exécuter :
 
 ```bash
 SSE_VERIFY_BASE_URL=https://<staging>/api/v1 npm run verify:kds-sse
+RLS_SMOKE_BASE_URL=https://<staging>/api/v1 npm run verify:app-rls
 ```
 
 Le script vérifie :
@@ -95,7 +106,9 @@ Le script vérifie :
 - `outbox_worker_up 1` ;
 - `outbox_events{status="FAILED"} 0` ;
 - `GET /metrics` du worker rétention ;
-- `retention_worker_up 1`.
+- `retention_worker_up 1` ;
+- rôles runtime non superuser/non BYPASSRLS ;
+- policies RLS et `relforcerowsecurity=true`.
 
 ### Observabilité
 
@@ -127,7 +140,8 @@ supprimées.
 - workers et rétention supervisés ;
 - backup/restore vérifiés ;
 - alertes/dashboard déployés ;
-- version/commit visibles.
+- version/commit visibles ;
+- tests RLS et UI navigateur disponibles dans l'environnement.
 
 Tant que ces éléments externes ne sont pas disponibles, le statut reste
 **BLOCKED-EXTERNAL**.

@@ -5,6 +5,12 @@ import { authAPI } from '@/api';
 interface AuthContextValue {
   user: AuthUser | null;
   login: (email: string, password: string, tenantId?: string) => Promise<void>;
+  register: (data: {
+    email: string;
+    password: string;
+    username: string;
+    tenantName: string;
+  }) => Promise<void>;
   switchTenant: (tenantId: string) => Promise<void>;
   logout: () => void;
   isLoading: boolean;
@@ -84,6 +90,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const register = useCallback(
+    async (data: {
+      email: string;
+      password: string;
+      username: string;
+      tenantName: string;
+    }) => {
+      const response = await authAPI.register(data);
+      localStorage.setItem('gymsoins_token', response.data.access_token);
+      setUser(userFromResponse(response.data));
+    },
+    [],
+  );
+
   const switchTenant = useCallback(async (tenantId: string) => {
     const response = await authAPI.switchTenant(tenantId);
     localStorage.setItem('gymsoins_token', response.data.access_token);
@@ -99,6 +119,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = {
     user,
     login,
+    register,
     switchTenant,
     logout,
     isLoading,

@@ -9,11 +9,14 @@ import { Building2, Shield } from 'lucide-react';
 import type { TenantSummary } from '@/types';
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, register } = useAuth();
   const { settings } = useSettings();
   const navigate = useNavigate();
+  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
+  const [tenantName, setTenantName] = useState('');
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
   const [selectedTenant, setSelectedTenant] = useState('');
   const [error, setError] = useState('');
@@ -24,7 +27,11 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
-      await login(email, password, selectedTenant || undefined);
+      if (mode === 'register') {
+        await register({ email, password, username, tenantName });
+      } else {
+        await login(email, password, selectedTenant || undefined);
+      }
       navigate('/dashboard');
     } catch (err) {
       const data = (
@@ -75,7 +82,9 @@ export default function LoginPage() {
               <Shield size={24} className="text-white" />
             </div>
           )}
-          <h1 className="text-2xl font-bold text-content">Connexion</h1>
+          <h1 className="text-2xl font-bold text-content">
+            {mode === 'login' ? 'Connexion' : 'Créer un établissement'}
+          </h1>
           <p className="text-sm text-content-muted">{settings.gymName}</p>
         </div>
 
@@ -97,6 +106,45 @@ export default function LoginPage() {
               required
             />
           </div>
+
+          {mode === 'register' && (
+            <div className="space-y-2">
+              <label
+                htmlFor="login-username"
+                className="text-sm font-medium text-content"
+              >
+                Nom du responsable
+              </label>
+              <Input
+                id="login-username"
+                type="text"
+                autoComplete="name"
+                placeholder="Nom du responsable"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                required
+              />
+            </div>
+          )}
+
+          {mode === 'register' && (
+            <div className="space-y-2">
+              <label
+                htmlFor="login-tenant-name"
+                className="text-sm font-medium text-content"
+              >
+                Nom de l’établissement
+              </label>
+              <Input
+                id="login-tenant-name"
+                type="text"
+                placeholder="Ex. Atlas Fitness"
+                value={tenantName}
+                onChange={(e) => setTenantName(e.target.value)}
+                required
+              />
+            </div>
+          )}
 
           <div className="space-y-2">
             <label
@@ -148,9 +196,27 @@ export default function LoginPage() {
             className="w-full"
             disabled={loading}
           >
-            {loading ? 'Connexion...' : 'Se connecter'}
+            {loading
+              ? 'Traitement...'
+              : mode === 'login'
+                ? 'Se connecter'
+                : 'Créer l’établissement'}
           </Button>
         </form>
+
+        <button
+          type="button"
+          onClick={() => {
+            setMode(mode === 'login' ? 'register' : 'login');
+            setError('');
+            setTenants([]);
+          }}
+          className="mt-4 w-full text-center text-xs font-medium text-brand-700 underline-offset-2 hover:underline dark:text-brand-300"
+        >
+          {mode === 'login'
+            ? 'Créer un nouvel établissement'
+            : 'Revenir à la connexion'}
+        </button>
 
         <p className="mt-6 text-center text-xs text-content-subtle">
           Version 1.0.0 &bull; Interface desktop via Tauri v2

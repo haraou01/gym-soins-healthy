@@ -4,16 +4,19 @@ import {
   HttpStatus,
   MessageEvent,
   Post,
-  Query,
   Req,
   Sse,
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
+import { Observable } from 'rxjs';
 import type { Request } from 'express';
-import { Observable, from, switchMap, throwError } from 'rxjs';
 
 import { Public, Roles, RolesGuard } from '../../../core/security';
+import {
+  KdsStreamRequest,
+  KdsTicketGuard,
+} from '../guards/kds-ticket.guard';
 import { KdsEventsService } from '../services/kds-events.service';
 import { KdsStreamTicketService } from '../services/kds-stream-ticket.service';
 
@@ -55,24 +58,13 @@ export class KdsSseController {
 
   /**
    * Flux SSE authentifié par ticket court à usage unique.
-   * Aucun JWT longue durée dans l'URL.
+   * Le guard consomme le ticket avant l'ouverture du flux, ce qui permet un
+   * vrai HTTP 401 sur ticket invalide/expiré/déjà utilisé.
    */
   @Public()
+  @UseGuards(KdsTicketGuard)
   @Sse('stream')
-  stream(@Query('ticket') ticket?: string): Observable<MessageEvent> {
-    return from(this.ticketService.consume(ticket ?? '')).pipe(
-      switchMap((session) => {
-        if (!session) {
-          return throwError(
-            () =>
-              new UnauthorizedException(
-                'Ticket SSE invalide, expiré ou déjà utilisé.',
-              ),
-          );
-        }
-
-        return this.eventsService.stream(session.tenantId);
-      }),
-    );
+  stream(@Req() request: KdsStreamRequest): Observable<MessageEvent> {
+    return this.eventsService.stream(request.kdsSession!.tenantId);
   }
 }

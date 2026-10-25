@@ -21,8 +21,10 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
-    const enabled =
-      this.configService.get<string>('OUTBOX_WORKER_ENABLED') !== 'false';
+    const raw = this.configService.get<boolean | string>(
+      'OUTBOX_WORKER_ENABLED',
+    );
+    const enabled = raw !== false && raw !== 'false';
 
     if (!enabled) {
       metrics.setGauge('outbox_worker_up', 0);

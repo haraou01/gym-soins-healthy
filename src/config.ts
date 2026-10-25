@@ -6,8 +6,12 @@ export const postgresqlFactory = registerAs('postgresql', () => ({
   type: 'postgres' as const,
   host: process.env.POSTGRES_HOST || 'localhost',
   port: parseInt(process.env.POSTGRES_PORT, 10) || 5432,
-  username: process.env.POSTGRES_USERNAME || 'admin',
-  password: process.env.POSTGRES_PASSWORD || '',
+  username:
+    process.env.POSTGRES_RUNTIME_USERNAME ||
+    'gymsoins_app',
+  password:
+    process.env.POSTGRES_RUNTIME_PASSWORD ??
+    '',
   database: process.env.POSTGRES_DATABASE || 'gymsoins',
   logging: process.env.NODE_ENV === 'development',
 }));
@@ -52,6 +56,16 @@ export const configSchema = Joi.object({
   POSTGRES_USERNAME: Joi.string().default('admin'),
   POSTGRES_PASSWORD: Joi.string().allow('').default(''),
   POSTGRES_DATABASE: Joi.string().default('gymsoins'),
+  POSTGRES_RUNTIME_USERNAME: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().required(),
+    otherwise: Joi.string().default('gymsoins_app'),
+  }),
+  POSTGRES_RUNTIME_PASSWORD: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().min(12).required(),
+    otherwise: Joi.string().allow('').default(''),
+  }),
 
   JWT_SECRET: Joi.string().when('NODE_ENV', {
     is: 'production',

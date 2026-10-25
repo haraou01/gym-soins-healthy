@@ -84,6 +84,14 @@ describe('GymSoinsHealthy — validation E2E', () => {
     process.env.JWT_SECRET = TEST_JWT_SECRET;
     process.env.JWT_EXPIRES_IN = '1h';
     process.env.LICENSE_SECRET = TEST_LICENSE_SECRET;
+    // La suite fonctionnelle utilise explicitement le rôle propriétaire ;
+    // la suite RLS dédiée utilise le rôle runtime restreint.
+    process.env.POSTGRES_RUNTIME_USERNAME = database.user;
+    process.env.POSTGRES_RUNTIME_PASSWORD = database.password;
+    delete process.env.WORKER_DB_USERNAME;
+    delete process.env.WORKER_DB_PASSWORD;
+    delete process.env.RETENTION_DB_USERNAME;
+    delete process.env.RETENTION_DB_PASSWORD;
     process.env.OUTBOX_WORKER_ENABLED = 'false';
     process.env.OUTBOX_MAX_ATTEMPTS = '2';
     process.env.OUTBOX_BASE_BACKOFF_MS = '1';

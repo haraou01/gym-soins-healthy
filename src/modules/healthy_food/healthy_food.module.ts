@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { HealthyFoodController } from './controllers/healthy_food.controller';
 import { KdsSseController } from './controllers/kds-sse.controller';
+import { KdsTicketGuard } from './guards/kds-ticket.guard';
 import {
   Dish,
   DishIngredient,
@@ -29,6 +30,7 @@ import { KdsStreamTicketService } from './services/kds-stream-ticket.service';
     HealthyFoodService,
     KdsStreamTicketService,
     KdsEventsService,
+    KdsTicketGuard,
   ],
   exports: [HealthyFoodService],
 })
