@@ -10,6 +10,7 @@
     "start:prod": "node dist/main.js",
     "nest": "nest start --watch",
     "dev": "nest start ts-node",
+    "db:migrate": "node scripts/migrate.js",
     "db:test:up": "docker compose -f docker-compose.test.yml up -d --wait",
     "db:test:down": "docker compose -f docker-compose.test.yml down -v",
     "test:e2e": "jest --config ./test/jest-e2e.json --runInBand"
@@ -27,6 +28,7 @@
     "bcryptjs": "^3.0.3",
     "bull": "^4.12.2",
     "class-validator": "^0.14.0",
+    "dotenv": "^16.6.1",
     "joi": "^17.13.3",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
