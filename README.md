@@ -80,6 +80,32 @@ Le runner :
 - enregistre chaque migration dans `schema_migrations` ;
 - exécute chaque fichier dans une transaction.
 
+## Sauvegarde et restauration
+
+Sauvegarde logique :
+
+```bash
+mkdir -p backups
+pg_dump -Fc \
+  -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+  -U "$POSTGRES_USERNAME" \
+  "$POSTGRES_DATABASE" \
+  > "backups/gymsoins_$(date +%Y%m%d_%H%M%S).dump"
+```
+
+Restauration dans une base vide :
+
+```bash
+pg_restore \
+  -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" \
+  -U "$POSTGRES_USERNAME" \
+  -d "$POSTGRES_DATABASE" \
+  --clean --if-exists \
+  backups/gymsoins_YYYYMMDD_HHMMSS.dump
+```
+
+Les fichiers de sauvegarde sont ignorés par Git. Tester impérativement une restauration avant toute mise en production.
+
 ## Tests
 
 Démarrer PostgreSQL de test :
