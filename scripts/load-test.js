@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { assertSafeTestTarget, displayTarget } = require('./lib/safe-target');
 const { Client } = require('pg');
 
 const baseUrl = (
@@ -362,6 +363,14 @@ async function cleanupDatabase() {
 }
 
 async function main() {
+  const safetyTarget = assertSafeTestTarget({
+    host: process.env.POSTGRES_HOST || '127.0.0.1',
+    port: Number(process.env.POSTGRES_PORT || 55432),
+    database: process.env.POSTGRES_DATABASE || 'gymsoins_test',
+    mode: 'destructive',
+  });
+  console.log(`[safe-target] ${displayTarget(safetyTarget)}`);
+
   await login();
 
   const scenario = process.env.LOAD_SCENARIO || 'all';

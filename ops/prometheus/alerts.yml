@@ -71,7 +71,7 @@ groups:
   - name: gymsoins-outbox
     rules:
       - alert: GymSoinsOutboxFailed
-        expr: sum(outbox_events{status="FAILED"}) > 0
+        expr: max(outbox_events{status="FAILED"}) > 0
         for: 1m
         labels:
           severity: critical
@@ -82,7 +82,7 @@ groups:
           action: "Consulter lastError, corriger le listener, puis requeue via l'endpoint admin Outbox. Ne jamais supprimer un FAILED."
 
       - alert: GymSoinsOutboxBacklog
-        expr: sum(outbox_events{status="PENDING"}) > 100
+        expr: max(outbox_events{status="PENDING"}) > 100
         for: 10m
         labels:
           severity: warning
@@ -93,7 +93,7 @@ groups:
           action: "Vérifier le worker (heartbeat), la latence DB, le taux de retry et le volume d'événements."
 
       - alert: GymSoinsOutboxProcessingStuck
-        expr: sum(outbox_events{status="PROCESSING"}) > 0
+        expr: max(outbox_events{status="PROCESSING"}) > 0
         for: 10m
         labels:
           severity: warning
@@ -115,7 +115,7 @@ groups:
           action: "Identifier eventType en échec, vérifier les dépendances listener et la connectivité DB."
 
       - alert: GymSoinsOutboxWorkerDown
-        expr: absent(outbox_worker_up) or outbox_worker_up == 0
+        expr: absent(outbox_worker_up{job="gymsoins-outbox-worker"}) or max by (job) (outbox_worker_up{job="gymsoins-outbox-worker"}) == 0
         for: 2m
         labels:
           severity: critical
@@ -125,8 +125,19 @@ groups:
           description: "Le worker Outbox n'est plus scrapeable ou est arrêté."
           action: "Démarrer/redémarrer le worker dédié, vérifier /health et /ready, puis surveiller le backlog."
 
+      - alert: GymSoinsOutboxWorkerScrapeDown
+        expr: absent(up{job="gymsoins-outbox-worker"}) or up{job="gymsoins-outbox-worker"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: gymsoins-outbox-worker
+        annotations:
+          summary: "Cible Prometheus worker Outbox absente ou DOWN"
+          description: "Le job gymsoins-outbox-worker n'est plus collecté ou sa cible est DOWN."
+          action: "Vérifier le processus worker, le port /metrics, la configuration Prometheus et les logs de scrape."
+
       - alert: GymSoinsOutboxWorkerHeartbeatStale
-        expr: time() - outbox_worker_heartbeat_timestamp_seconds > 30
+        expr: time() - max(outbox_worker_heartbeat_timestamp_seconds{job="gymsoins-outbox-worker"}) > 30
         for: 2m
         labels:
           severity: critical
@@ -139,7 +150,7 @@ groups:
   - name: gymsoins-retention
     rules:
       - alert: GymSoinsRetentionWorkerDown
-        expr: absent(retention_worker_up) or retention_worker_up == 0
+        expr: absent(retention_worker_up{job="gymsoins-retention-worker"}) or max by (job) (retention_worker_up{job="gymsoins-retention-worker"}) == 0
         for: 30m
         labels:
           severity: warning
@@ -148,6 +159,17 @@ groups:
           summary: "Worker rétention absent"
           description: "Le worker de rétention n'est pas actif."
           action: "Démarrer le worker dédié, vérifier le verrou advisory et /health."
+
+      - alert: GymSoinsRetentionWorkerScrapeDown
+        expr: absent(up{job="gymsoins-retention-worker"}) or up{job="gymsoins-retention-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: gymsoins-retention-worker
+        annotations:
+          summary: "Cible Prometheus worker rétention absente ou DOWN"
+          description: "Le job gymsoins-retention-worker n'est plus collecté ou sa cible est DOWN."
+          action: "Vérifier le processus rétention, le port /metrics, la configuration Prometheus et les logs de scrape."
 
       - alert: GymSoinsRetentionErrors
         expr: increase(retention_purge_errors_total[1h]) > 0
@@ -161,7 +183,7 @@ groups:
           action: "Consulter les logs retention, vérifier les locks PostgreSQL et les requêtes de purge."
 
       - alert: GymSoinsRetentionStale
-        expr: time() - retention_last_success_timestamp_seconds > 129600
+        expr: time() - max(retention_last_success_timestamp_seconds{job="gymsoins-retention-worker"}) > 129600
         for: 30m
         labels:
           severity: warning

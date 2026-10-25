@@ -4,6 +4,10 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const {
+  validateReadonlyTarget,
+  displayTarget,
+} = require('./lib/db-target-policies');
 
 const database = {
   host: process.env.POSTGRES_HOST || 'localhost',
@@ -133,6 +137,16 @@ function pruneOldBackups(currentFile) {
 }
 
 async function main() {
+  // Une sauvegarde lit la base : refuser staging/55432 non autorisés avant
+  // toute connexion ou écriture de fichier.
+  const target = validateReadonlyTarget({
+    host: database.host,
+    port: database.port,
+    database: database.name,
+    env: process.env,
+  });
+  console.log(`[safe-target] cible ${displayTarget(target)}`);
+
   fs.mkdirSync(backupDir, { recursive: true });
 
   const safeDatabase = database.name.replace(/[^a-zA-Z0-9_-]/g, '_');

@@ -25,27 +25,40 @@ de bout en bout.
 ## Exécution
 
 ```bash
-# 1. Démarrer PostgreSQL de test (port 55432, base recréée à chaque run)
-npm run db:test:up
+# Legacy local uniquement : opt-in explicite pour 55432.
+# Base déjà bootstrappée avec les rôles runtime :
+ALLOW_LEGACY_TEST_DB=true npm run test:e2e
 
-# 2. Lancer la suite
+# Legacy local, base neuve : reset explicite des rôles de test uniquement.
+# La CI n'active ce reset que sur les bases éphémères gymsoins_ci et
+# gymsoins_backup_source ; jamais sur staging/production.
+ALLOW_LEGACY_TEST_DB=true TEST_RESET_RUNTIME_ROLES=true npm run test:e2e
+
+# Cible staging isolée autorisée (55433, jamais gymsoins_staging)
+TEST_PG_HOST=127.0.0.1 \
+TEST_PG_PORT=55433 \
+TEST_PG_DATABASE=gymsoins_p5_iso_<timestamp> \
+TEST_RESET_RUNTIME_ROLES=false \
 npm run test:e2e
 
-# 3. Arrêter et supprimer le conteneur
-npm run db:test:down
+# Tests unitaires sans base (38/38, dont les garde-fous de cible)
+npm run test:unit
 ```
 
 La suite :
 
-1. attend que PostgreSQL réponde (`waitForDatabase`) ;
-2. supprime puis recrée la base `gymsoins_test` ;
-3. applique `src/database/migrations/*.sql` dans l'ordre ;
-4. insère les 5 rôles RBAC et le compte `admin.e2e@gymsoins.local` ;
-5. démarre l'application NestJS avec le même `ValidationPipe` que `src/main.ts`.
+1. valide la cible (hôte, port, base, mode) avant toute connexion ;
+2. refuse `gymsoins_staging`, le port `55432` sans `ALLOW_LEGACY_TEST_DB=true`,
+   et toute base non lecture non isolée sur `55433` ;
+3. attend que PostgreSQL réponde (`waitForDatabase`) ;
+4. supprime puis recrée la base de test autorisée ;
+5. applique `src/database/migrations/*.sql` dans l'ordre ;
+6. insère les 5 rôles RBAC et le compte `admin.e2e@gymsoins.local` ;
+7. démarre l'application NestJS avec le même `ValidationPipe` que `src/main.ts`.
 
 ## Variables d'environnement
 
-Toutes optionnelles, valeurs par défaut alignées sur `docker-compose.test.yml` :
+Valeurs par défaut historiques (volontairement refusées par le garde-fou) :
 
 | Variable | Défaut |
 |----------|--------|
@@ -55,21 +68,36 @@ Toutes optionnelles, valeurs par défaut alignées sur `docker-compose.test.yml`
 | `TEST_PG_PASSWORD` | `gymsoins` |
 | `TEST_PG_ADMIN_DB` | `postgres` |
 | `TEST_PG_DATABASE` | `gymsoins_test` |
+| `TEST_RESET_RUNTIME_ROLES` | `false` |
 
-Pour utiliser un PostgreSQL existant, exportez ces variables puis lancez `npm run test:e2e`
-(sans `db:test:up`).
+Pour utiliser un PostgreSQL existant, exportez ces variables puis lancez `npm run test:e2e`.
+Le port `55432` exige `ALLOW_LEGACY_TEST_DB=true` **et** une base de l'allowlist
+exacte : `gymsoins_test`, `gymsoins_ci`, `gymsoins_backup_source` (legacy) ou
+`gymsoins_migration_blank`, `gymsoins_restore_check` (CI éphémère). Aucune autre
+base n'est acceptée. `gymsoins_test` reste legacy et n'est pas utilisé par la CI.
+Une cible `55433` en mode migration/écriture/destructif doit être préfixée
+`gymsoins_p5_iso_`.
+
+Les scripts `restore.js`, `migrate.js`, `bootstrap-db-roles.js`, `backup.js` et
+`verify-restore.js` appliquent le même garde-fou avant toute connexion. La CI
+valide aussi les bases éphémères avec `node scripts/ci-db-guard.js` avant chaque
+`DROP`/`CREATE`.
 
 > La base de test est **supprimée puis recréée** à chaque exécution : ne pointez jamais
-> `TEST_PG_DATABASE` vers une base contenant des données utiles.
+> `TEST_PG_DATABASE` vers une base contenant des données utiles. `gymsoins_staging`
+> est refusée sans exception.
 
 ## Structure
 
 ```
 test/
 ├── integration.e2e-spec.ts     # scénarios E2E ordonnés
+├── target-guard.unit-spec.ts   # garde-fou safe-target
+├── db-target-policies.unit-spec.ts # politiques restore/migrate/bootstrap
 ├── jest-e2e.json               # configuration Jest + ts-jest
 └── utils/
     └── test-database.ts        # reset DB, migrations, seed rôles + admin
+scripts/lib/db-target-policies.js # garde-fou des scripts opérationnels
 docker-compose.test.yml         # PostgreSQL 16 éphémère (tmpfs)
 ```
 

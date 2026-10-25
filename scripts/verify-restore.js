@@ -3,6 +3,10 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client } = require('pg');
+const {
+  validateVerifyRestoreTargets,
+  displayTarget,
+} = require('./lib/db-target-policies');
 
 const sourceDatabase = process.env.POSTGRES_DATABASE || 'gymsoins';
 const targetDatabase = process.env.RESTORE_DATABASE;
@@ -38,9 +42,15 @@ async function main() {
     throw new Error('RESTORE_DATABASE est obligatoire.');
   }
 
-  if (targetDatabase === sourceDatabase) {
-    throw new Error('Les bases source et cible doivent être différentes.');
-  }
+  // Vérification en lecture seule des deux cibles avant toute connexion.
+  const targets = validateVerifyRestoreTargets({
+    host: settings.host,
+    port: settings.port,
+    sourceDatabase,
+    targetDatabase,
+    env: process.env,
+  });
+  console.log(`[safe-target] cible ${displayTarget(targets.target)}`);
 
   const source = client(sourceDatabase);
   const target = client(targetDatabase);

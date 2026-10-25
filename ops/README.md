@@ -121,3 +121,49 @@ Le script vérifie :
 - règles avec `expr`, `for`, `severity`, `action` ;
 - JSON Grafana valide ;
 - dashboard non vide.
+
+## Validation staging locale (Phase 5)
+
+Fichiers dédiés :
+
+- `prometheus/prometheus.staging.yml` : cibles `host.docker.internal` pour
+  l'API `:3000`, le worker Outbox `:3102` et le worker rétention `:3103`.
+- `prometheus/alerts.staging-test.yml` : règle de test explicitement limitée
+  au staging, utilisée pour prouver le chargement et le déclenchement d'alertes.
+
+Snapshot lecture seule réellement archivé :
+`artifacts/phase5/observability-readonly-2026-10-25T22-28-42-179Z/`.
+
+```text
+Prometheus 2.55.1 : conteneur local, port 9091, /-/ready 200
+Grafana 11.3.0    : conteneur local, port 3001, /api/health OK
+API staging test : up
+Worker Outbox : up
+Worker rétention : up
+Dashboard : GymSoinsHealthy — Production Overview, 9 panneaux
+Datasource Prometheus : OK
+Alerte de test : firing au snapshot
+Erreurs KDS de l'ancienne pile : GymSoinsKdsPollErrors firing au snapshot
+```
+
+La résolution/re-déclenchement de l'alerte de test et la validation du runtime
+isolé final (workers sans polling KDS) restent des **preuves de session** ou sont
+archivées séparément dans `workers-2026-10-25T22-08-34-107Z/`. Ne pas lire le
+snapshot de l'ancienne pile comme le runtime isolé final.
+
+La règle `GymSoinsStagingAlertPipelineTest` n'est **pas** incluse dans
+`prometheus.yml` de production. Elle sert uniquement à valider le pipeline.
+
+Les alertes worker filtrent `job` pour éviter les faux positifs provenant de
+`outbox_worker_up=0`/`retention_worker_up=0` exposés par l'API lorsque le worker
+in-process est désactivé. Deux alertes de scrape explicites couvrent aussi
+l'absence ou le DOWN de la cible Prometheus :
+
+- `GymSoinsOutboxWorkerScrapeDown` ;
+- `GymSoinsRetentionWorkerScrapeDown`.
+
+Le worker rétention désactive le polling KDS via `KDS_EVENTS_ENABLED=false` ;
+seule l'API principale garde ce polling actif. Cela évite les erreurs
+`list_kds_outbox_events()` sous le rôle `gymsoins_retention`.
+
+Aucun dashboard ni Prometheus/Grafana n'a été déployé sur un staging externe.

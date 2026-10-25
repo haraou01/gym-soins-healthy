@@ -1,3 +1,4 @@
+import './core/runtime/retention-worker-bootstrap';
 import './core/telemetry/register';
 import 'reflect-metadata';
 
@@ -18,13 +19,6 @@ import { shutdownTelemetry } from './core/telemetry';
  * assure idempotency + outbox purge, avec verrou PostgreSQL multi-instance.
  */
 async function bootstrap(): Promise<void> {
-  process.env.OUTBOX_WORKER_ENABLED = 'false';
-  process.env.RETENTION_PURGE_ENABLED = 'true';
-  process.env.POSTGRES_RUNTIME_USERNAME =
-    process.env.RETENTION_DB_USERNAME || 'gymsoins_retention';
-  process.env.POSTGRES_RUNTIME_PASSWORD =
-    process.env.RETENTION_DB_PASSWORD || '';
-
   const app: INestApplicationContext =
     await NestFactory.createApplicationContext(AppModule, {
       bufferLogs: true,

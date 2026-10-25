@@ -28,6 +28,8 @@ Ces résultats ne sont **pas** un benchmark universel.
 ## Commande
 
 ```bash
+# Legacy local uniquement : opt-in explicite pour 55432 et base allowlistée.
+ALLOW_LEGACY_TEST_DB=true \
 LOAD_SCENARIO=matrix \
 POSTGRES_HOST=127.0.0.1 POSTGRES_PORT=55432 \
 POSTGRES_USERNAME=gymsoins POSTGRES_PASSWORD=gymsoins \
@@ -194,25 +196,37 @@ db_locks{waiting} : 0
 ## Phase 5 — charge multi-tenant A/B sous RLS
 
 Cette mesure utilise deux tenants réels, deux JWT distincts et le rôle runtime
-`gymsoins_app` avec RLS actif. Une seule instance API et une seule instance
-PostgreSQL sont utilisées.
+`gymsoins_app` avec RLS actif. Elle a été exécutée sur une base isolée du
+serveur PostgreSQL staging (`55433`), sans toucher à `gymsoins_staging`.
+Une seule instance API et une seule instance PostgreSQL sont utilisées.
 
 Commande :
 
 ```bash
-LOAD_MULTI_REQUESTS=100 LOAD_MULTI_CONCURRENCY=25 npm run load:test:multi
+POSTGRES_HOST=127.0.0.1 \
+POSTGRES_PORT=55433 \
+POSTGRES_DATABASE=gymsoins_p5_iso_<timestamp> \
+LOAD_MULTI_REQUESTS=100 LOAD_MULTI_CONCURRENCY=25 \
+npm run load:test:multi
 ```
+
+Le script refuse `gymsoins_staging`, le port `55432` par défaut et toute base
+non isolée en mode migration/écriture/destructif. La cible autorisée est affichée
+avant le test, sans mot de passe.
 
 | Scénario | Req./tenant | Conc. | Throughput | p50 | p95 | p99 | Erreurs |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| Shop A | 100 | 25 | 43,40 req/s | 541 ms | 708 ms | 750 ms | 0 |
-| Shop B | 100 | 25 | 41,86 req/s | 509 ms | 955 ms | 1166 ms | 0 |
-| Booking A | 100 | 25 | 175,75 req/s | 141 ms | 152 ms | 155 ms | 0 |
-| Booking B | 100 | 25 | 164,74 req/s | 148 ms | 178 ms | 198 ms | 0 |
-| KDS orders A | 100 | 25 | 59,35 req/s | 401 ms | 519 ms | 527 ms | 0 |
-| KDS orders B | 100 | 25 | 58,48 req/s | 399 ms | 568 ms | 626 ms | 0 |
-| KDS status A | 100 | 25 | 105,49 req/s | 229 ms | 259 ms | 263 ms | 0 |
-| KDS status B | 100 | 25 | 104,17 req/s | 236 ms | 264 ms | 270 ms | 0 |
+| Shop A | 100 | 25 | 46,90 req/s | 499 ms | 688 ms | 697 ms | 0 |
+| Shop B | 100 | 25 | 45,75 req/s | 456 ms | 819 ms | 1095 ms | 0 |
+| Booking A | 100 | 25 | 189,04 req/s | 128 ms | 139 ms | 149 ms | 0 |
+| Booking B | 100 | 25 | 180,83 req/s | 130 ms | 169 ms | 175 ms | 0 |
+| KDS orders A | 100 | 25 | 63,21 req/s | 378 ms | 465 ms | 482 ms | 0 |
+| KDS orders B | 100 | 25 | 62,11 req/s | 382 ms | 519 ms | 621 ms | 0 |
+| KDS status A | 100 | 25 | 109,17 req/s | 223 ms | 232 ms | 239 ms | 0 |
+| KDS status B | 100 | 25 | 107,99 req/s | 224 ms | 251 ms | 260 ms | 0 |
+
+Source exacte : `artifacts/phase5/load-2026-10-25T22-08-33-739Z/p5-runtime-load.log`.
+Les valeurs p95 sont donc celles de la preuve archivée, pas une estimation.
 
 Intégrité :
 

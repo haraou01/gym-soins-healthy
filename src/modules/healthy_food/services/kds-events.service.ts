@@ -1,9 +1,11 @@
 import {
   Injectable,
+  Logger,
   MessageEvent,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   Observable,
   Subject,
@@ -42,6 +44,7 @@ interface KdsRealtimeEvent {
 
 @Injectable()
 export class KdsEventsService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(KdsEventsService.name);
   private readonly subject = new Subject<KdsRealtimeEvent>();
   private readonly seenEventIds = new Set<string>();
   private timer?: NodeJS.Timeout;
@@ -50,10 +53,19 @@ export class KdsEventsService implements OnModuleInit, OnModuleDestroy {
   private activeConnections = 0;
   private pollErrors = 0;
 
-  constructor(private readonly dataSource: DataSource) {}
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly configService: ConfigService,
+  ) {}
 
   onModuleInit(): void {
     metrics.setGauge('kds_sse_active_connections', 0);
+
+    if (!this.isEnabled()) {
+      this.logger.log('Polling KDS désactivé par configuration.');
+      return;
+    }
+
     this.timer = setInterval(() => {
       void this.pollOutbox();
     }, 1_000);
@@ -128,6 +140,14 @@ export class KdsEventsService implements OnModuleInit, OnModuleDestroy {
 
   getPollErrors(): number {
     return this.pollErrors;
+  }
+
+  private isEnabled(): boolean {
+    const raw = this.configService.get<boolean | string>(
+      'KDS_EVENTS_ENABLED',
+    );
+
+    return raw !== false && raw !== 'false';
   }
 
   private async pollOutbox(): Promise<void> {

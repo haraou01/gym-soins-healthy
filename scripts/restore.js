@@ -5,6 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { Client } = require('pg');
+const {
+  validateRestoreTargets,
+  displayTarget,
+} = require('./lib/db-target-policies');
 
 const sourceDatabase = process.env.POSTGRES_DATABASE || 'gymsoins';
 const targetDatabase = process.env.RESTORE_DATABASE;
@@ -165,7 +169,17 @@ async function main() {
     throw new Error('RESTORE_DATABASE est obligatoire.');
   }
 
+  // Validation obligatoire avant toute lecture de sauvegarde, connexion ou
+  // commande destructive (DROP/CREATE/pg_restore).
+  const { target } = validateRestoreTargets({
+    host: database.host,
+    port: database.port,
+    sourceDatabase,
+    targetDatabase,
+    env: process.env,
+  });
   safeIdentifier(targetDatabase);
+  console.log(`[safe-target] cible ${displayTarget(target)}`);
 
   if (targetDatabase === sourceDatabase && !allowOverPrimary) {
     throw new Error(

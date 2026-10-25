@@ -13,6 +13,10 @@
 require('dotenv').config();
 
 const { Client } = require('pg');
+const {
+  validateRoleBootstrapTarget,
+  displayTarget,
+} = require('./lib/db-target-policies');
 
 const owner = {
   host: process.env.POSTGRES_HOST || 'localhost',
@@ -29,6 +33,16 @@ const roles = [
 ];
 
 async function main() {
+  // Double protection : cible autorisée et activation explicite avant toute
+  // connexion ou modification des rôles runtime.
+  const target = validateRoleBootstrapTarget({
+    host: owner.host,
+    port: owner.port,
+    database: owner.database,
+    env: process.env,
+  });
+  console.log(`[safe-target] cible ${displayTarget(target)}`);
+
   for (const [name, password] of roles) {
     if (!password || password.length < 12) {
       throw new Error(

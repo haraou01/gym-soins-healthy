@@ -106,6 +106,7 @@ export const configSchema = Joi.object({
   AUTH_REFRESH_IP_MAX_ATTEMPTS: Joi.number().default(30),
   AUTH_REFRESH_RATE_WINDOW_SECONDS: Joi.number().default(60),
 
+  KDS_EVENTS_ENABLED: Joi.boolean().default(true),
   RETENTION_PURGE_ENABLED: Joi.boolean().default(false),
   RETENTION_PURGE_INTERVAL_MS: Joi.number().default(21_600_000),
   RETENTION_PURGE_MAX_BATCHES: Joi.number().default(20),

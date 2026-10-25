@@ -10,6 +10,14 @@ const dashboardPath = path.join(
   root,
   'ops/grafana/dashboards/gymsoins-overview.json',
 );
+const stagingPrometheusPath = path.join(
+  root,
+  'ops/prometheus/prometheus.staging.yml',
+);
+const stagingTestAlertsPath = path.join(
+  root,
+  'ops/prometheus/alerts.staging-test.yml',
+);
 
 function fail(message) {
   throw new Error(message);
@@ -17,6 +25,12 @@ function fail(message) {
 
 const alerts = yaml.load(fs.readFileSync(alertsPath, 'utf8'));
 const prometheus = yaml.load(fs.readFileSync(prometheusPath, 'utf8'));
+const stagingPrometheus = yaml.load(
+  fs.readFileSync(stagingPrometheusPath, 'utf8'),
+);
+const stagingTestAlerts = yaml.load(
+  fs.readFileSync(stagingTestAlertsPath, 'utf8'),
+);
 const dashboard = JSON.parse(fs.readFileSync(dashboardPath, 'utf8'));
 
 if (!Array.isArray(alerts.groups) || alerts.groups.length === 0) {
@@ -55,6 +69,19 @@ if (!Array.isArray(dashboard.panels) || dashboard.panels.length === 0) {
   fail('dashboard: panels absent');
 }
 
+if (
+  !Array.isArray(stagingPrometheus.scrape_configs) ||
+  stagingPrometheus.scrape_configs.length === 0
+) {
+  fail('prometheus.staging.yml: scrape_configs absent');
+}
+
+const stagingRule = stagingTestAlerts.groups?.[0]?.rules?.[0];
+
+if (stagingRule?.alert !== 'GymSoinsStagingAlertPipelineTest') {
+  fail('alerts.staging-test.yml: règle de test absente');
+}
+
 for (const panel of dashboard.panels) {
   if (!panel.title || !panel.type || !Array.isArray(panel.targets)) {
     fail('dashboard: panneau invalide');
@@ -71,6 +98,8 @@ console.log(
       alertGroups: alerts.groups.length,
       alerts: ruleCount,
       scrapeJobs: prometheus.scrape_configs.length,
+      stagingScrapeJobs: stagingPrometheus.scrape_configs.length,
+      stagingTestAlert: stagingRule.alert,
       dashboardPanels: dashboard.panels.length,
       dashboardUid: dashboard.uid,
     },

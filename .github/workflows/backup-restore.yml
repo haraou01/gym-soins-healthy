@@ -54,6 +54,9 @@ jobs:
       TEST_PG_USER: gymsoins
       TEST_PG_PASSWORD: gymsoins
       TEST_PG_DATABASE: gymsoins_backup_source
+      ALLOW_LEGACY_TEST_DB: 'true'
+      # Rôles de test uniquement, base éphémère CI ; jamais staging/production.
+      TEST_RESET_RUNTIME_ROLES: 'true'
       OBSERVABILITY_LOG_ENABLED: false
       RETENTION_PURGE_ENABLED: false
       OUTBOX_WORKER_ENABLED: false
@@ -104,6 +107,7 @@ jobs:
         env:
           PGPASSWORD: gymsoins
         run: |
+          node scripts/ci-db-guard.js gymsoins_restore_check destructive
           psql -h 127.0.0.1 -p 55432 -U gymsoins -d postgres -v ON_ERROR_STOP=1 \
             -c 'DROP DATABASE IF EXISTS gymsoins_restore_check;' \
             -c 'CREATE DATABASE gymsoins_restore_check;'

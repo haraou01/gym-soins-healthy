@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 const { Client } = require('pg');
+const { assertSafeTestTarget, displayTarget } = require('./lib/safe-target');
 
 const API = (
   process.env.LOAD_MULTI_BASE_URL || 'http://127.0.0.1:3000/api/v1'
@@ -467,6 +468,14 @@ async function cleanupDatabase() {
 }
 
 async function main() {
+  const safetyTarget = assertSafeTestTarget({
+    host: process.env.POSTGRES_HOST || '127.0.0.1',
+    port: Number(process.env.POSTGRES_PORT || 55432),
+    database: process.env.POSTGRES_DATABASE || 'gymsoins_test',
+    mode: 'destructive',
+  });
+  console.log(`[safe-target] ${displayTarget(safetyTarget)}`);
+
   const tenantA = await register('a', '10.70.1.1');
   const tenantB = await register('b', '10.70.1.2');
 

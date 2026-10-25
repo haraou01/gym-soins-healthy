@@ -3,6 +3,24 @@ import { join } from 'node:path';
 import { Client } from 'pg';
 import * as bcrypt from 'bcryptjs';
 
+const {
+  assertSafeTestTarget,
+  displayTarget,
+} = require('../../scripts/lib/safe-target') as {
+  assertSafeTestTarget: (input: {
+    host: string;
+    port: number;
+    database: string;
+    mode: string;
+  }) => { host: string; port: number; database: string; mode: string };
+  displayTarget: (input: {
+    host: string;
+    port: number;
+    database: string;
+    mode?: string;
+  }) => string;
+};
+
 export const TEST_ADMIN_EMAIL = 'admin.e2e@gymsoins.local';
 export const TEST_ADMIN_PASSWORD = 'AdminE2E123!';
 export const TEST_ADMIN_ROLE = 'SUPER_ADMIN';
@@ -34,12 +52,13 @@ export interface TestDatabaseSettings {
   workerPassword: string;
   retentionUser: string;
   retentionPassword: string;
+  resetRuntimeRoles: boolean;
 }
 
 const SAFE_IDENTIFIER = /^[A-Za-z0-9_]+$/;
 
 export function getTestDatabaseSettings(): TestDatabaseSettings {
-  return {
+  const settings: TestDatabaseSettings = {
     host: process.env.TEST_PG_HOST ?? 'localhost',
     port: Number(process.env.TEST_PG_PORT ?? 55432),
     user: process.env.TEST_PG_USER ?? 'gymsoins',
@@ -56,7 +75,17 @@ export function getTestDatabaseSettings(): TestDatabaseSettings {
       process.env.TEST_PG_RETENTION_USER ?? TEST_RETENTION_USER,
     retentionPassword:
       process.env.TEST_PG_RETENTION_PASSWORD ?? TEST_RETENTION_PASSWORD,
+    resetRuntimeRoles: process.env.TEST_RESET_RUNTIME_ROLES === 'true',
   };
+
+  assertSafeTestTarget({
+    host: settings.host,
+    port: settings.port,
+    database: settings.database,
+    mode: 'destructive',
+  });
+
+  return settings;
 }
 
 /** Attend que PostgreSQL accepte les connexions (utile juste après `docker compose up`). */
@@ -65,6 +94,13 @@ export async function waitForDatabase(
   attempts = 30,
   delayMs = 1_000,
 ): Promise<void> {
+  assertSafeTestTarget({
+    host: settings.host,
+    port: settings.port,
+    database: settings.database,
+    mode: 'destructive',
+  });
+
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -105,6 +141,20 @@ export async function resetTestDatabase(
     throw new Error(`Nom de base de test invalide : ${settings.database}`);
   }
 
+  const target = assertSafeTestTarget({
+    host: settings.host,
+    port: settings.port,
+    database: settings.database,
+    mode: 'destructive',
+  });
+
+  process.stdout.write(
+    `[test-db] cible autorisée : ${displayTarget({
+      ...target,
+      mode: 'destructive',
+    })}\n`,
+  );
+
   const connection = {
     host: settings.host,
     port: settings.port,
@@ -131,7 +181,13 @@ export async function resetTestDatabase(
 
   try {
     await runMigrations(client);
-    await ensureRuntimeRoles(client, settings);
+
+    if (settings.resetRuntimeRoles) {
+      await ensureRuntimeRoles(client, settings);
+    } else {
+      await assertRuntimeRolesExist(client, settings);
+    }
+
     await seedRolesAndAdmin(client);
   } finally {
     await client.end();
@@ -159,6 +215,30 @@ async function runMigrations(client: Client): Promise<void> {
        ON CONFLICT (name) DO NOTHING`,
       [migration],
     );
+  }
+}
+
+async function assertRuntimeRolesExist(
+  client: Client,
+  settings: TestDatabaseSettings,
+): Promise<void> {
+  const roles = [
+    settings.runtimeUser,
+    settings.workerUser,
+    settings.retentionUser,
+  ];
+
+  for (const role of roles) {
+    const result = await client.query(
+      'SELECT 1 FROM pg_roles WHERE rolname = $1 AND rolcanlogin = true AND rolsuper = false AND rolbypassrls = false',
+      [role],
+    );
+
+    if (result.rowCount !== 1) {
+      throw new Error(
+        `Rôle runtime staging absent ou non conforme : ${role}`,
+      );
+    }
   }
 }
 

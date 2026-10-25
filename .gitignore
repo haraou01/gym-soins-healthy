@@ -40,3 +40,9 @@ Thumbs.db
 tmp/
 temp/
 backups/
+
+# Compose local de staging (peut contenir des secrets)
+docker-compose.staging.yml
+
+# Archives locales de preuves de validation
+artifacts/

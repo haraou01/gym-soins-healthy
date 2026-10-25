@@ -66,6 +66,11 @@ jobs:
       - name: Validate observability assets
         run: npm run validate:ops
 
+      - name: Unit tests (no database)
+        env:
+          NODE_ENV: test
+        run: npm run test:unit
+
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update
@@ -79,7 +84,9 @@ jobs:
           POSTGRES_USERNAME: gymsoins
           POSTGRES_PASSWORD: gymsoins
           POSTGRES_DATABASE: gymsoins_migration_blank
+          ALLOW_LEGACY_TEST_DB: 'true'
         run: |
+          node scripts/ci-db-guard.js gymsoins_migration_blank destructive
           psql -h 127.0.0.1 -p 55432 -U gymsoins -d postgres -v ON_ERROR_STOP=1 \
             -c 'DROP DATABASE IF EXISTS gymsoins_migration_blank;' \
             -c 'CREATE DATABASE gymsoins_migration_blank;'
@@ -96,6 +103,9 @@ jobs:
           TEST_PG_USER: gymsoins
           TEST_PG_PASSWORD: gymsoins
           TEST_PG_DATABASE: gymsoins_ci
+          ALLOW_LEGACY_TEST_DB: 'true'
+          # Rôles de test uniquement, base éphémère CI ; jamais staging/production.
+          TEST_RESET_RUNTIME_ROLES: 'true'
         run: npx jest --config ./test/jest-e2e.json --runInBand
 
       - name: Verify OpenTelemetry OTLP export
@@ -109,6 +119,7 @@ jobs:
           APP_DB_PASSWORD: e2e-app-runtime-password-2026
           WORKER_DB_USER: gymsoins_worker
           WORKER_DB_PASSWORD: e2e-worker-runtime-password-2026
+          ALLOW_LEGACY_TEST_DB: 'true'
         run: npm run verify:otel
 
       - name: Retention worker smoke
@@ -160,6 +171,7 @@ jobs:
           POSTGRES_RUNTIME_PASSWORD: e2e-app-runtime-password-2026
           SSE_VERIFY_BASE_URL: http://127.0.0.1:3105/api/v1
           RLS_SMOKE_BASE_URL: http://127.0.0.1:3105/api/v1
+          ALLOW_LEGACY_TEST_DB: 'true'
         run: |
           node dist/main.js > /tmp/kds-sse-ci.log 2>&1 &
           echo $! > /tmp/kds-sse-ci.pid

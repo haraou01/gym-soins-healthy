@@ -18,6 +18,10 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { Client } = require('pg');
+const {
+  validateMigrationTarget,
+  displayTarget,
+} = require('./lib/db-target-policies');
 
 const migrationsDirectory = path.join(
   __dirname,
@@ -36,6 +40,16 @@ const databaseConfig = {
 };
 
 async function main() {
+  // Une migration écrit dans la base : refuser toute cible interdite avant
+  // d'ouvrir la moindre connexion.
+  const target = validateMigrationTarget({
+    host: databaseConfig.host,
+    port: databaseConfig.port,
+    database: databaseConfig.database,
+    env: process.env,
+  });
+  console.log(`[safe-target] cible ${displayTarget(target)}`);
+
   const client = new Client(databaseConfig);
 
   try {

@@ -4,12 +4,6 @@ import { Client, Pool } from 'pg';
 import {
   getTestDatabaseSettings,
   resetTestDatabase,
-  TEST_RETENTION_PASSWORD,
-  TEST_RETENTION_USER,
-  TEST_RUNTIME_PASSWORD,
-  TEST_RUNTIME_USER,
-  TEST_WORKER_PASSWORD,
-  TEST_WORKER_USER,
   TestDatabaseSettings,
 } from './utils/test-database';
 
@@ -64,10 +58,14 @@ describe('Phase 5 — RLS PostgreSQL avec rôle runtime', () => {
     await resetTestDatabase(settings);
 
     owner = new Client(connection(settings.user, settings.password));
-    app = new Client(connection(TEST_RUNTIME_USER, TEST_RUNTIME_PASSWORD));
-    worker = new Client(connection(TEST_WORKER_USER, TEST_WORKER_PASSWORD));
+    app = new Client(
+      connection(settings.runtimeUser, settings.runtimePassword),
+    );
+    worker = new Client(
+      connection(settings.workerUser, settings.workerPassword),
+    );
     retention = new Client(
-      connection(TEST_RETENTION_USER, TEST_RETENTION_PASSWORD),
+      connection(settings.retentionUser, settings.retentionPassword),
     );
 
     await Promise.all([
@@ -174,7 +172,7 @@ describe('Phase 5 — RLS PostgreSQL avec rôle runtime', () => {
     );
 
     expect(result.rows[0]).toMatchObject({
-      current_user: TEST_RUNTIME_USER,
+      current_user: settings.runtimeUser,
       rolsuper: false,
       rolbypassrls: false,
     });
@@ -286,8 +284,8 @@ describe('Phase 5 — RLS PostgreSQL avec rôle runtime', () => {
     const pool = new Pool({
       host: settings.host,
       port: settings.port,
-      user: TEST_RUNTIME_USER,
-      password: TEST_RUNTIME_PASSWORD,
+      user: settings.runtimeUser,
+      password: settings.runtimePassword,
       database: settings.database,
       max: 1,
     });
@@ -316,8 +314,8 @@ describe('Phase 5 — RLS PostgreSQL avec rôle runtime', () => {
     const pool = new Pool({
       host: settings.host,
       port: settings.port,
-      user: TEST_RUNTIME_USER,
-      password: TEST_RUNTIME_PASSWORD,
+      user: settings.runtimeUser,
+      password: settings.runtimePassword,
       database: settings.database,
       max: 4,
     });

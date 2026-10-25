@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 const { createServer } = require('node:http');
+const { assertSafeTestTarget, displayTarget } = require('./lib/safe-target');
 const { spawn } = require('node:child_process');
 const { Client } = require('pg');
 
@@ -132,6 +133,14 @@ async function cleanupDatabase(productId, saleId) {
 }
 
 async function main() {
+  const safetyTarget = assertSafeTestTarget({
+    host: process.env.POSTGRES_HOST || '127.0.0.1',
+    port: Number(process.env.POSTGRES_PORT || 55432),
+    database: process.env.POSTGRES_DATABASE || 'gymsoins_test',
+    mode: 'destructive',
+  });
+  console.log(`[safe-target] ${displayTarget(safetyTarget)}`);
+
   const collector = createServer((request, response) => {
     let body = '';
 

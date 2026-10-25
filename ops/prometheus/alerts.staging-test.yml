@@ -1,0 +1,13 @@
+groups:
+  - name: gymsoins-staging-pipeline-test
+    rules:
+      - alert: GymSoinsStagingAlertPipelineTest
+        expr: vector(1) > 0
+        for: 5s
+        labels:
+          severity: warning
+          service: gymsoins-staging-test
+        annotations:
+          summary: "Test contrôlé du pipeline d'alerte"
+          description: "Règle de staging uniquement. Prouve que Prometheus charge et déclenche une alerte."
+          action: "Aucune action production. Cette règle n'est montée qu'en staging local."
