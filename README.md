@@ -114,6 +114,19 @@ pg_restore \
 
 Les fichiers de sauvegarde sont ignorés par Git. Tester impérativement une restauration avant toute mise en production.
 
+Scripts automatisés :
+
+```bash
+npm run backup
+RESTORE_DATABASE=gymsoins_restore_check npm run restore
+RESTORE_DATABASE=gymsoins_restore_check npm run verify:restore
+SMOKE_API_URL=http://127.0.0.1:3001/api/v1 \
+  SMOKE_EMAIL=... SMOKE_PASSWORD=... \
+  npm run smoke:restore
+```
+
+Le workflow `.github/workflows/backup-restore.yml` exécute backup → restore → migrations → vérification → smoke tests dans un environnement isolé, sur planification quotidienne.
+
 ## Tests
 
 Démarrer PostgreSQL de test :
@@ -144,7 +157,25 @@ Le workflow `.github/workflows/ci.yml` exécute :
 1. installation backend et frontend ;
 2. build NestJS ;
 3. typecheck + build Vite ;
-4. tests E2E sur PostgreSQL éphémère.
+4. audit des secrets ;
+5. tests E2E sur PostgreSQL éphémère.
+
+## Tests de charge
+
+Le script `scripts/load-test.js` couvre Booking, Shop et KDS.
+
+```bash
+LOAD_SCENARIO=all \
+LOAD_REQUESTS=20 \
+LOAD_CONCURRENCY=10 \
+LOAD_BASE_URL=http://127.0.0.1:3000/api/v1 \
+LOAD_EMAIL=admin.e2e@gymsoins.local \
+LOAD_PASSWORD='AdminE2E123!' \
+POSTGRES_DATABASE=gymsoins_test \
+npm run load:test
+```
+
+Il mesure throughput, p50/p95/p99, statuts HTTP, erreurs, conflits et un instantané des métriques Outbox/DB. Utiliser une base isolée : les données créées sont nettoyées par le script via `LOAD_CLEANUP=true` par défaut.
 
 ## Licence Plug-and-Play
 
@@ -194,13 +225,51 @@ Endpoints d'exploitation (SUPER_ADMIN) :
 
 Le worker est configurable via les variables `OUTBOX_*` et ne dépend pas de Redis.
 
+### Worker Outbox dédié
+
+En local, l'API peut traiter l'Outbox. En production multi-instance, désactiver le worker dans l'API :
+
+```bash
+OUTBOX_WORKER_ENABLED=false
+```
+
+Puis lancer le worker dédié :
+
+```bash
+npm run build
+npm run start:worker
+```
+
+Le worker expose :
+
+- `GET http://127.0.0.1:3002/health`
+- `GET http://127.0.0.1:3002/ready`
+- `GET http://127.0.0.1:3002/metrics`
+
+Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise PostgreSQL comme source de vérité. Redis n'est pas requis.
+
 ### Observabilité
 
 - Logs JSON structurés avec `requestId`.
 - En-tête `X-Request-Id` accepté et propagé.
+- Tracing W3C : `traceparent`, `X-Trace-Id`, `traceId`/`spanId` dans les logs et les événements Outbox.
 - Métriques Prometheus : `GET /api/v1/observability/metrics` (SUPER_ADMIN).
 - Métriques HTTP, erreurs, DB PostgreSQL, Outbox et worker.
-- Erreurs HTTP enrichies avec `requestId`.
+- Erreurs HTTP enrichies avec `requestId` et `traceId`.
+
+### Rétention
+
+Purge manuelle contrôlée (SUPER_ADMIN) :
+
+```http
+POST /api/v1/observability/retention/run
+```
+
+- idempotency : uniquement `COMPLETED` expirées, `FOR UPDATE SKIP LOCKED` ;
+- outbox : uniquement `PROCESSED` expirés ;
+- `PENDING`, `PROCESSING`, `FAILED` sont conservés ;
+- purge par lots et métriques dédiées ;
+- worker de purge périodique configurable.
 
 ### Sécurité HTTP
 
@@ -212,6 +281,29 @@ Le worker est configurable via les variables `OUTBOX_*` et ne dépend pas de Red
 - Audit des connexions/inscriptions dans `security_audit_logs`.
 - Validation DTO stricte (`forbidNonWhitelisted`).
 - `JWT_SECRET` et `LICENSE_SECRET` obligatoires (>= 32 caractères) en production.
+
+### Refresh tokens
+
+Le modèle actuel ne stocke pas de refresh token : l'API délivre uniquement un access token JWT. Une implémentation future devra ajouter une table de sessions, stocker un hash opaque, gérer rotation/révocation/détection de réutilisation et l'audit associé. Aucun flux JWT existant n'a été modifié.
+
+## Rotation des secrets
+
+Les secrets de production doivent être fournis par l'environnement, jamais par Git.
+
+Procédure recommandée :
+
+1. générer une nouvelle valeur aléatoire (>= 32 caractères) ;
+2. mettre à jour le gestionnaire de secrets / l'environnement ;
+3. redémarrer les processus API et worker ;
+4. vérifier `/health`, les logs et les métriques.
+
+Impacts :
+
+- rotation de `JWT_SECRET` : invalide toutes les sessions JWT existantes ;
+- rotation de `LICENSE_SECRET` : invalide les clés de licence signées avec l'ancien secret ;
+- les dumps PostgreSQL contiennent des hashes de mots de passe : les protéger comme des secrets.
+
+Le contrôle `npm run audit:secrets` vérifie les fichiers versionnés. Il est exécuté en CI.
 
 ## Notes de sécurité
 

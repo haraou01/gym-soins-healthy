@@ -1,0 +1,157 @@
+name: Backup & Restore
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup-restore
+  cancel-in-progress: false
+
+jobs:
+  backup-restore:
+    name: Backup, restore, verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: gymsoins
+          POSTGRES_PASSWORD: gymsoins
+          POSTGRES_DB: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U gymsoins -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      NODE_ENV: test
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 55432
+      POSTGRES_USERNAME: gymsoins
+      POSTGRES_PASSWORD: gymsoins
+      POSTGRES_DATABASE: gymsoins_backup_source
+      JWT_SECRET: restore-ci-jwt-secret-change-me
+      LICENSE_SECRET: restore-ci-license-secret-change-me
+      LICENSE_DEV_MODE: true
+      TEST_PG_HOST: 127.0.0.1
+      TEST_PG_PORT: 55432
+      TEST_PG_USER: gymsoins
+      TEST_PG_PASSWORD: gymsoins
+      TEST_PG_DATABASE: gymsoins_backup_source
+      OBSERVABILITY_LOG_ENABLED: false
+      RETENTION_PURGE_ENABLED: false
+      OUTBOX_WORKER_ENABLED: false
+      BACKUP_DIR: ${{ runner.temp }}/backups
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/src-frontend/package-lock.json
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Populate source database with E2E
+        env:
+          TEST_PG_DATABASE: gymsoins_backup_source
+        run: npx jest --config ./test/jest-e2e.json --runInBand
+
+      - name: Re-enable admin for smoke test
+        env:
+          PGPASSWORD: gymsoins
+        run: |
+          psql -h 127.0.0.1 -p 55432 -U gymsoins -d gymsoins_backup_source -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO security_audit_logs (action, email, success)
+          VALUES ('LOGIN', 'admin.e2e@gymsoins.local', true);
+          SQL
+
+      - name: Backup
+        run: npm run backup
+
+      - name: Create restore database
+        env:
+          PGPASSWORD: gymsoins
+        run: |
+          psql -h 127.0.0.1 -p 55432 -U gymsoins -d postgres -v ON_ERROR_STOP=1 \
+            -c 'DROP DATABASE IF EXISTS gymsoins_restore_check;' \
+            -c 'CREATE DATABASE gymsoins_restore_check;'
+
+      - name: Restore
+        env:
+          RESTORE_DATABASE: gymsoins_restore_check
+        run: |
+          BACKUP_FILE="$(ls -t "${BACKUP_DIR}"/*.dump | head -1)" npm run restore
+
+      - name: Migrate restored database
+        env:
+          POSTGRES_DATABASE: gymsoins_restore_check
+        run: npm run db:migrate
+
+      - name: Verify restore
+        env:
+          POSTGRES_DATABASE: gymsoins_backup_source
+          RESTORE_DATABASE: gymsoins_restore_check
+        run: npm run verify:restore
+
+      - name: Start restored API
+        env:
+          POSTGRES_DATABASE: gymsoins_restore_check
+          PORT: 3001
+        run: |
+          node dist/main.js > /tmp/restore-api.log 2>&1 &
+          echo $! > /tmp/restore-api.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3001/api/v1/license/features >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/restore-api.log
+          exit 1
+
+      - name: Smoke restored API
+        env:
+          SMOKE_API_URL: http://127.0.0.1:3001/api/v1
+          SMOKE_EMAIL: admin.e2e@gymsoins.local
+          SMOKE_PASSWORD: AdminE2E123!
+        run: npm run smoke:restore
+
+      - name: Stop restored API
+        if: always()
+        run: |
+          if [ -f /tmp/restore-api.pid ]; then
+            kill -TERM "$(cat /tmp/restore-api.pid)" || true
+          fi
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: postgres-backup
+          path: ${{ runner.temp }}/backups/*.dump
+          retention-days: 7

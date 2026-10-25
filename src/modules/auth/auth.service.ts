@@ -5,6 +5,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
@@ -27,6 +28,15 @@ export interface AuthRequestContext {
 
 @Injectable()
 export class AuthService {
+  private readonly loginEmailMaxAttempts: number;
+  private readonly loginIpMaxAttempts: number;
+  private readonly loginRateWindowSeconds: number;
+  private readonly registerEmailMaxAttempts: number;
+  private readonly registerIpMaxAttempts: number;
+  private readonly registerRateWindowSeconds: number;
+  private readonly refreshIpMaxAttempts: number;
+  private readonly refreshRateWindowSeconds: number;
+
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
@@ -34,7 +44,49 @@ export class AuthService {
     private readonly roleRepository: Repository<RoleEntity>,
     private readonly jwtService: JwtService,
     private readonly authAuditService: AuthAuditService,
-  ) {}
+    configService: ConfigService,
+  ) {
+    this.loginEmailMaxAttempts = this.readNumber(
+      configService,
+      'AUTH_LOGIN_EMAIL_MAX_ATTEMPTS',
+      20,
+    );
+    this.loginIpMaxAttempts = this.readNumber(
+      configService,
+      'AUTH_LOGIN_IP_MAX_ATTEMPTS',
+      30,
+    );
+    this.loginRateWindowSeconds = this.readNumber(
+      configService,
+      'AUTH_LOGIN_RATE_WINDOW_SECONDS',
+      60,
+    );
+    this.registerEmailMaxAttempts = this.readNumber(
+      configService,
+      'AUTH_REGISTER_EMAIL_MAX_ATTEMPTS',
+      5,
+    );
+    this.registerIpMaxAttempts = this.readNumber(
+      configService,
+      'AUTH_REGISTER_IP_MAX_ATTEMPTS',
+      5,
+    );
+    this.registerRateWindowSeconds = this.readNumber(
+      configService,
+      'AUTH_REGISTER_RATE_WINDOW_SECONDS',
+      3600,
+    );
+    this.refreshIpMaxAttempts = this.readNumber(
+      configService,
+      'AUTH_REFRESH_IP_MAX_ATTEMPTS',
+      30,
+    );
+    this.refreshRateWindowSeconds = this.readNumber(
+      configService,
+      'AUTH_REFRESH_RATE_WINDOW_SECONDS',
+      60,
+    );
+  }
 
   async login(
     email: string,
@@ -42,6 +94,15 @@ export class AuthService {
     context: AuthRequestContext = {},
   ): Promise<LoginResponse> {
     const normalizedEmail = email.trim().toLowerCase();
+
+    await this.enforceRateLimit(
+      'LOGIN',
+      normalizedEmail,
+      context.ip,
+      this.loginEmailMaxAttempts,
+      this.loginIpMaxAttempts,
+      this.loginRateWindowSeconds,
+    );
 
     if (
       await this.authAuditService.isLoginLocked(
@@ -97,6 +158,16 @@ export class AuthService {
     context: AuthRequestContext = {},
   ): Promise<LoginResponse> {
     const email = userData.email.trim().toLowerCase();
+
+    await this.enforceRateLimit(
+      'REGISTER',
+      email,
+      context.ip,
+      this.registerEmailMaxAttempts,
+      this.registerIpMaxAttempts,
+      this.registerRateWindowSeconds,
+    );
+
     const existing = await this.userRepository.findOne({ where: { email } });
 
     if (existing) {
@@ -156,6 +227,15 @@ export class AuthService {
     _refreshToken: string,
     context: AuthRequestContext = {},
   ): Promise<LoginResponse> {
+    await this.enforceRateLimit(
+      'REFRESH',
+      undefined,
+      context.ip,
+      undefined,
+      this.refreshIpMaxAttempts,
+      this.refreshRateWindowSeconds,
+    );
+
     await this.authAuditService.record({
       action: 'REFRESH',
       success: false,
@@ -168,6 +248,50 @@ export class AuthService {
   }
 
   /** --- Helpers --- */
+
+  private async enforceRateLimit(
+    action: string,
+    email: string | undefined,
+    ip: string | undefined,
+    emailMaxAttempts: number | undefined,
+    ipMaxAttempts: number | undefined,
+    windowSeconds: number,
+  ): Promise<void> {
+    const limited = await this.authAuditService.isRateLimited(
+      action,
+      { email, ip },
+      { email: emailMaxAttempts, ip: ipMaxAttempts },
+      windowSeconds,
+    );
+
+    if (!limited) {
+      return;
+    }
+
+    await this.authAuditService.record({
+      action,
+      email: email ?? null,
+      success: false,
+      ip: ip ?? null,
+      metadata: { reason: 'RATE_LIMITED' },
+    });
+
+    throw new HttpException(
+      'Trop de tentatives. Réessayez dans quelques minutes.',
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  private readNumber(
+    configService: ConfigService,
+    key: string,
+    fallback: number,
+  ): number {
+    const raw = configService.get<string | number>(key);
+    const value = Number(raw);
+
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  }
 
   private async findActiveUserByEmail(email: string): Promise<User | null> {
     const user = await this.userRepository.findOne({

@@ -1,5 +1,7 @@
 import type { LoggerService } from '@nestjs/common';
 
+import { getTraceContext } from '../tracing';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'verbose';
 
 function enabled(): boolean {
@@ -21,6 +23,8 @@ export function writeJsonLog(
     level,
     event,
     context: context ?? null,
+    traceId: getTraceContext()?.traceId ?? null,
+    spanId: getTraceContext()?.spanId ?? null,
     ...data,
   };
 

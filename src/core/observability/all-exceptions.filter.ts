@@ -7,11 +7,13 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 
+import { getTraceContext } from '../tracing';
 import { writeJsonLog } from './json-logger';
 
 interface RequestWithContext extends Request {
   requestId?: string;
   user?: { id?: string; role?: string };
+  traceId?: string;
 }
 
 @Catch()
@@ -48,10 +50,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
             };
 
     const requestId = request.requestId ?? null;
+    const traceId =
+      request.traceId ?? getTraceContext()?.traceId ?? null;
     const body = {
       ...baseResponse,
       statusCode: status,
       requestId,
+      traceId,
     };
 
     writeJsonLog(
@@ -60,6 +65,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       'Exceptions',
       {
         requestId,
+        traceId,
         method: request.method,
         path: request.originalUrl,
         statusCode: status,

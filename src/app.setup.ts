@@ -63,9 +63,13 @@ export function configureApp(app: INestApplication): void {
       'x-license-key',
       'x-hardware-id',
       'x-request-id',
+      'traceparent',
+      'tracestate',
     ],
     exposedHeaders: [
       'X-Request-Id',
+      'X-Trace-Id',
+      'traceparent',
       'X-RateLimit-Limit',
       'X-RateLimit-Remaining',
       'X-RateLimit-Reset',

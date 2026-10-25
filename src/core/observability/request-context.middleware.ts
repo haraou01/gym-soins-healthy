@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 
+import {
+  createTraceContext,
+  formatTraceparent,
+  runWithTraceContext,
+} from '../tracing';
 import { writeJsonLog } from './json-logger';
 import { metrics } from './metrics.registry';
 
@@ -10,6 +15,7 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 interface AuthenticatedRequest extends Request {
   user?: { id?: string; role?: string };
   requestId?: string;
+  traceId?: string;
 }
 
 /**
@@ -29,6 +35,16 @@ export function requestContextMiddleware(
 
   request.requestId = requestId;
   response.setHeader('X-Request-Id', requestId);
+
+  const incomingTraceparent = request.headers.traceparent;
+  const traceparent = Array.isArray(incomingTraceparent)
+    ? incomingTraceparent[0]
+    : incomingTraceparent;
+  const traceContext = createTraceContext(traceparent);
+
+  request.traceId = traceContext.traceId;
+  response.setHeader('X-Trace-Id', traceContext.traceId);
+  response.setHeader('traceparent', formatTraceparent(traceContext));
 
   const startedAt = process.hrtime.bigint();
   let logged = false;
@@ -66,6 +82,9 @@ export function requestContextMiddleware(
 
     writeJsonLog('info', 'http.request', 'HTTP', {
       requestId,
+      traceId: traceContext.traceId,
+      spanId: traceContext.spanId,
+      parentSpanId: traceContext.parentSpanId ?? null,
       method,
       path: request.originalUrl,
       route,
@@ -81,5 +100,5 @@ export function requestContextMiddleware(
   response.on('finish', finish);
   response.on('close', finish);
 
-  next();
+  runWithTraceContext(traceContext, () => next());
 }

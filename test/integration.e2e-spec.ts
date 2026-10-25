@@ -10,6 +10,7 @@ import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { OutboxService } from '../src/core/outbox';
+import { AuthAuditService } from '../src/modules/auth/auth-audit.service';
 import {
   getTestDatabaseSettings,
   resetTestDatabase,
@@ -82,6 +83,7 @@ describe('GymSoinsHealthy — validation E2E', () => {
     process.env.OUTBOX_BASE_BACKOFF_MS = '1';
     process.env.TRUST_PROXY = 'true';
     process.env.OBSERVABILITY_LOG_ENABLED = 'false';
+    process.env.RETENTION_PURGE_ENABLED = 'false';
     delete process.env.LICENSE_KEY;
     delete process.env.LICENSE_HARDWARE_ID;
 
@@ -711,6 +713,7 @@ describe('GymSoinsHealthy — validation E2E', () => {
         .expect(201);
 
       const key = `e2e-outbox-sale-${suffix}`;
+      const traceId = 'a'.repeat(32);
       const payload = {
         clientId,
         items: [{ productId: product.body.id, quantity: 1 }],
@@ -721,8 +724,11 @@ describe('GymSoinsHealthy — validation E2E', () => {
         .post('/api/v1/shop/sales/process')
         .set('Authorization', `Bearer ${accessToken}`)
         .set('Idempotency-Key', key)
+        .set('traceparent', `00-${traceId}-${'b'.repeat(16)}-01`)
         .send(payload)
         .expect(201);
+
+      expect(sale.headers['x-trace-id']).toBe(traceId);
 
       // Le dispatch immédiat attend le listener : la fidélité est disponible.
       const balance = await http
@@ -733,7 +739,7 @@ describe('GymSoinsHealthy — validation E2E', () => {
       expect(balance.body.pointsBalance).toBe(12);
 
       const events = await dataSource.query(
-        `SELECT id, "eventType", "aggregateType", "aggregateId", status, attempts
+        `SELECT id, "eventType", "aggregateType", "aggregateId", status, attempts, "traceId", "spanId"
          FROM outbox_events WHERE "aggregateId" = $1`,
         [sale.body.saleId],
       );
@@ -745,7 +751,9 @@ describe('GymSoinsHealthy — validation E2E', () => {
         aggregateId: sale.body.saleId,
         status: 'PROCESSED',
         attempts: 1,
+        traceId,
       });
+      expect(events[0].spanId).toBeTruthy();
 
       // Replay idempotent : aucun second événement outbox.
       await http
@@ -1067,13 +1075,110 @@ describe('GymSoinsHealthy — validation E2E', () => {
       expect(metrics.text).toContain('outbox_events{status=');
     });
 
-    it('ajoute le requestId aux erreurs HTTP', async () => {
+    it('ajoute le requestId et le traceId aux erreurs HTTP', async () => {
+      const traceId = 'c'.repeat(32);
       const response = await http
         .get('/api/v1/gym/subscriptions')
         .set('x-request-id', 'e2e-correlation-error')
+        .set('traceparent', `00-${traceId}-${'d'.repeat(16)}-01`)
         .expect(401);
 
       expect(response.body.requestId).toBe('e2e-correlation-error');
+      expect(response.body.traceId).toBe(traceId);
+      expect(response.headers['x-trace-id']).toBe(traceId);
+    });
+
+    it('propage un traceparent W3C sur une requête authentifiée', async () => {
+      const traceId = 'e'.repeat(32);
+      const response = await http
+        .get('/api/v1/gym/subscriptions')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('traceparent', `00-${traceId}-${'f'.repeat(16)}-01`)
+        .expect(200);
+
+      expect(response.headers['x-trace-id']).toBe(traceId);
+      expect(response.headers.traceparent).toContain(traceId);
+    });
+
+    it('purge uniquement les clés d’idempotence COMPLETED expirées', async () => {
+      const dataSource = app.get(DataSource);
+      const scope = `e2e.retention.${Date.now()}`;
+
+      await dataSource.query(
+        `INSERT INTO idempotency_keys
+          ("scope", "key", "requestHash", "status", "response", "createdAt", "updatedAt")
+         VALUES
+          ($1, 'old-completed', 'hash', 'COMPLETED', '{}'::jsonb, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ($1, 'recent-completed', 'hash', 'COMPLETED', '{}'::jsonb, NOW(), NOW()),
+          ($1, 'old-processing', 'hash', 'PROCESSING', NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days')`,
+        [scope],
+      );
+
+      const result = await http
+        .post('/api/v1/observability/retention/run')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(result.body.idempotencyKeysPurged).toBeGreaterThanOrEqual(1);
+
+      const rows = await dataSource.query(
+        'SELECT "key", "status" FROM idempotency_keys WHERE "scope" = $1 ORDER BY "key"',
+        [scope],
+      );
+
+      expect(rows.map((row: { key: string }) => row.key)).toEqual([
+        'old-processing',
+        'recent-completed',
+      ]);
+    });
+
+    it('purge uniquement les événements Outbox PROCESSED expirés', async () => {
+      const dataSource = app.get(DataSource);
+      const prefix = `e2e-retention-outbox-${Date.now()}`;
+
+      await dataSource.query(
+        `INSERT INTO outbox_events
+          ("eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "processedAt", "lastError", "createdAt", "updatedAt")
+         VALUES
+          ('test.retention', 'test', $1, '{}'::jsonb, 'PROCESSED', 1, NOW(), NOW() - INTERVAL '40 days', NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ('test.retention', 'test', $2, '{}'::jsonb, 'PROCESSED', 1, NOW(), NOW(), NULL, NOW(), NOW()),
+          ('test.retention', 'test', $3, '{}'::jsonb, 'PENDING', 0, NOW(), NULL, NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ('test.retention', 'test', $4, '{}'::jsonb, 'PROCESSING', 1, NOW(), NULL, NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ('test.retention', 'test', $5, '{}'::jsonb, 'FAILED', 10, NOW(), NULL, 'boom', NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days')`,
+        [
+          `${prefix}-old-processed`,
+          `${prefix}-recent-processed`,
+          `${prefix}-pending`,
+          `${prefix}-processing`,
+          `${prefix}-failed`,
+        ],
+      );
+
+      const result = await http
+        .post('/api/v1/observability/retention/run')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(result.body.outboxEventsPurged).toBeGreaterThanOrEqual(1);
+
+      const rows = await dataSource.query(
+        `SELECT "aggregateId", "status" FROM outbox_events
+         WHERE "aggregateId" LIKE $1
+         ORDER BY "aggregateId"`,
+        [`${prefix}%`],
+      );
+
+      expect(
+        rows
+          .map((row: { aggregateId: string; status: string }) => row.status)
+          .sort(),
+      ).toEqual(['FAILED', 'PENDING', 'PROCESSED', 'PROCESSING']);
+      expect(
+        rows.some(
+          (row: { aggregateId: string }) =>
+            row.aggregateId === `${prefix}-old-processed`,
+        ),
+      ).toBe(false);
     });
   });
 
@@ -1240,6 +1345,46 @@ describe('GymSoinsHealthy — validation E2E', () => {
   // -------------------------------------------------------------------------
   describe('6. Sécurité production', () => {
     const suffix = Date.now();
+
+    it('partage les compteurs de rate limiting via PostgreSQL', async () => {
+      const dataSource = app.get(DataSource);
+      const auditService = app.get(AuthAuditService);
+      const email = `e2e-distributed-rate-${suffix}@example.com`;
+      const ip = '198.51.100.200';
+
+      await dataSource.query(
+        `INSERT INTO security_audit_logs (action, email, success, ip)
+         SELECT 'LOGIN', $1, false, $2 FROM generate_series(1, 5)`,
+        [email, ip],
+      );
+
+      expect(
+        await auditService.isRateLimited(
+          'LOGIN',
+          { email },
+          { email: 5 },
+          60,
+        ),
+      ).toBe(true);
+
+      expect(
+        await auditService.isRateLimited(
+          'LOGIN',
+          { email },
+          { email: 6 },
+          60,
+        ),
+      ).toBe(false);
+
+      expect(
+        await auditService.isRateLimited(
+          'LOGIN',
+          { ip },
+          { ip: 5 },
+          60,
+        ),
+      ).toBe(true);
+    });
 
     it('expose les headers de sécurité et une CORS explicite', async () => {
       const allowed = await http

@@ -90,4 +90,47 @@ export class AuthAuditService {
 
     return failures >= maxFailures;
   }
+
+  /**
+   * Compteur partagé en PostgreSQL, donc multi-instance.
+   * Redis n'est pas requis pour garantir la cohérence.
+   */
+  async isRateLimited(
+    action: string,
+    identifiers: { email?: string; ip?: string },
+    limits: { email?: number; ip?: number },
+    windowSeconds: number,
+  ): Promise<boolean> {
+    const since = new Date(Date.now() - windowSeconds * 1000);
+
+    if (identifiers.email && limits.email) {
+      const count = await this.auditRepository.count({
+        where: {
+          action,
+          email: identifiers.email.trim().toLowerCase(),
+          createdAt: MoreThan(since),
+        },
+      });
+
+      if (count >= limits.email) {
+        return true;
+      }
+    }
+
+    if (identifiers.ip && limits.ip) {
+      const count = await this.auditRepository.count({
+        where: {
+          action,
+          ip: identifiers.ip,
+          createdAt: MoreThan(since),
+        },
+      });
+
+      if (count >= limits.ip) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 }

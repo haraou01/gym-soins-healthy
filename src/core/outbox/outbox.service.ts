@@ -4,6 +4,13 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { metrics } from '../observability/metrics.registry';
+import { writeJsonLog } from '../observability/json-logger';
+import {
+  createChildTraceContext,
+  createTraceContext,
+  getTraceContext,
+  runWithTraceContext,
+} from '../tracing';
 
 export type OutboxStatus = 'PENDING' | 'PROCESSING' | 'PROCESSED' | 'FAILED';
 
@@ -25,6 +32,8 @@ export interface OutboxEvent {
   availableAt: Date;
   processedAt: Date | null;
   lastError: string | null;
+  traceId?: string | null;
+  spanId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -64,11 +73,12 @@ export class OutboxService {
     manager: EntityManager,
     input: AppendOutboxEventInput,
   ): Promise<string> {
+    const trace = getTraceContext();
     const rows = await manager.query(
       `
         INSERT INTO "outbox_events"
-          ("eventType", "aggregateType", "aggregateId", "payload", "status")
-        VALUES ($1, $2, $3, $4::jsonb, 'PENDING')
+          ("eventType", "aggregateType", "aggregateId", "payload", "status", "traceId", "spanId")
+        VALUES ($1, $2, $3, $4::jsonb, 'PENDING', $5, $6)
         RETURNING "id"
       `,
       [
@@ -76,6 +86,8 @@ export class OutboxService {
         input.aggregateType,
         input.aggregateId,
         JSON.stringify(input.payload) ?? 'null',
+        trace?.traceId ?? null,
+        trace?.spanId ?? null,
       ],
     );
 
@@ -235,24 +247,55 @@ export class OutboxService {
   }
 
   private async processClaimed(event: OutboxEvent): Promise<void> {
-    try {
-      const payload =
-        event.payload && typeof event.payload === 'object'
-          ? { ...(event.payload as Record<string, unknown>) }
-          : { data: event.payload };
+    const rootContext = event.traceId
+      ? {
+          traceId: event.traceId,
+          spanId: event.spanId ?? createTraceContext().spanId,
+        }
+      : createTraceContext();
+    const context = event.traceId
+      ? createChildTraceContext(rootContext)
+      : rootContext;
+    const startedAt = Date.now();
 
-      await this.eventEmitter.emitAsync(event.eventType, {
-        ...payload,
-        outboxEventId: event.id,
-      });
+    await runWithTraceContext(context, async () => {
+      try {
+        const payload =
+          event.payload && typeof event.payload === 'object'
+            ? { ...(event.payload as Record<string, unknown>) }
+            : { data: event.payload };
 
-      await this.markProcessed(event.id);
-      metrics.inc('outbox_events_processed_total', {
-        eventType: event.eventType,
-      });
-    } catch (error) {
-      await this.markFailed(event, error);
-    }
+        await this.eventEmitter.emitAsync(event.eventType, {
+          ...payload,
+          outboxEventId: event.id,
+        });
+
+        await this.markProcessed(event.id);
+        metrics.inc('outbox_events_processed_total', {
+          eventType: event.eventType,
+        });
+        writeJsonLog('info', 'outbox.event.processed', 'Outbox', {
+          outboxEventId: event.id,
+          eventType: event.eventType,
+          aggregateType: event.aggregateType,
+          aggregateId: event.aggregateId,
+          traceId: context.traceId,
+          spanId: context.spanId,
+          parentSpanId: context.parentSpanId ?? null,
+          durationMs: Date.now() - startedAt,
+        });
+      } catch (error) {
+        writeJsonLog('warn', 'outbox.event.failed', 'Outbox', {
+          outboxEventId: event.id,
+          eventType: event.eventType,
+          traceId: context.traceId,
+          spanId: context.spanId,
+          parentSpanId: context.parentSpanId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        await this.markFailed(event, error);
+      }
+    });
   }
 
   private async markProcessed(id: string): Promise<void> {

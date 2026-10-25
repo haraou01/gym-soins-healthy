@@ -116,9 +116,21 @@ async function runMigrations(client: Client): Promise<void> {
     .filter((file) => file.endsWith('.sql'))
     .sort();
 
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      name VARCHAR(255) PRIMARY KEY,
+      applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
   for (const migration of migrations) {
     const sql = readFileSync(join(migrationsDirectory, migration), 'utf8');
     await client.query(sql);
+    await client.query(
+      `INSERT INTO schema_migrations (name) VALUES ($1)
+       ON CONFLICT (name) DO NOTHING`,
+      [migration],
+    );
   }
 }
 

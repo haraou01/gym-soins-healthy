@@ -60,6 +60,9 @@ jobs:
         working-directory: client/src-frontend
         run: npm run build
 
+      - name: Audit secrets
+        run: npm run audit:secrets
+
       - name: Run E2E tests
         env:
           TEST_PG_HOST: 127.0.0.1

@@ -91,6 +91,23 @@ export const configSchema = Joi.object({
   TRUST_PROXY: Joi.boolean().default(false),
   OBSERVABILITY_LOG_ENABLED: Joi.boolean().default(true),
 
+  AUTH_LOGIN_EMAIL_MAX_ATTEMPTS: Joi.number().default(20),
+  AUTH_LOGIN_IP_MAX_ATTEMPTS: Joi.number().default(30),
+  AUTH_LOGIN_RATE_WINDOW_SECONDS: Joi.number().default(60),
+  AUTH_REGISTER_EMAIL_MAX_ATTEMPTS: Joi.number().default(5),
+  AUTH_REGISTER_IP_MAX_ATTEMPTS: Joi.number().default(5),
+  AUTH_REGISTER_RATE_WINDOW_SECONDS: Joi.number().default(3600),
+  AUTH_REFRESH_IP_MAX_ATTEMPTS: Joi.number().default(30),
+  AUTH_REFRESH_RATE_WINDOW_SECONDS: Joi.number().default(60),
+
+  RETENTION_PURGE_ENABLED: Joi.boolean().default(true),
+  RETENTION_PURGE_INTERVAL_MS: Joi.number().default(21_600_000),
+  RETENTION_PURGE_MAX_BATCHES: Joi.number().default(20),
+  IDEMPOTENCY_RETENTION_DAYS: Joi.number().default(30),
+  IDEMPOTENCY_PURGE_BATCH_SIZE: Joi.number().default(500),
+  OUTBOX_RETENTION_DAYS: Joi.number().default(30),
+  OUTBOX_PURGE_BATCH_SIZE: Joi.number().default(500),
+
   OUTBOX_WORKER_ENABLED: Joi.boolean().allow('').optional(),
   OUTBOX_POLL_INTERVAL_MS: Joi.number().optional(),
   OUTBOX_BATCH_SIZE: Joi.number().optional(),
@@ -98,6 +115,8 @@ export const configSchema = Joi.object({
   OUTBOX_BASE_BACKOFF_MS: Joi.number().optional(),
   OUTBOX_MAX_BACKOFF_MS: Joi.number().optional(),
   OUTBOX_LOCK_TIMEOUT_MS: Joi.number().optional(),
+  WORKER_HEALTH_HOST: Joi.string().default('127.0.0.1'),
+  WORKER_HEALTH_PORT: Joi.number().default(3002),
 }).unknown(true);
 
 export default { postgresqlFactory, redisFactory, jwtFactory, licenseFactory, configSchema };

@@ -18,6 +18,7 @@ import { SecurityModule } from './core/security/security.module';
 import { IdempotencyModule } from './core/idempotency';
 import { OutboxModule } from './core/outbox';
 import { ObservabilityModule } from './core/observability';
+import { RetentionModule } from './core/retention';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { BookingModule } from './modules/booking/booking.module';
@@ -92,6 +93,9 @@ import { ShopModule } from './modules/shop/shop.module';
 
     // Observabilité : logs structurés, métriques, corrélation
     ObservabilityModule,
+
+    // Rétention idempotency/outbox
+    RetentionModule,
 
     // Métiers
     AuthModule,
