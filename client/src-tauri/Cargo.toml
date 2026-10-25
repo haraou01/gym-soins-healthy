@@ -1,0 +1,13 @@
+[package]
+name = "gym-soins-healthy-client"
+version = "1.0.0"
+description = "Tauri backend for GymSoinsHealthy desktop app"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2", features = ["api-all"] }
+
+[build-dependencies]
+
+[profile.release]
+opt-level = 3

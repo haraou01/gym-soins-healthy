@@ -1,0 +1,219 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ============================================================================
+ * Design tokens
+ * ============================================================================
+ * Deux familles de tokens cohabitent :
+ *
+ * 1. Tokens sémantiques (surface, card, line, content) : utilisés par les
+ *    composants UI et les pages. Ils changent de valeur via `html.dark`.
+ *
+ * 2. Palettes whitelabel `--brand-*` / `--accent-*` : recalculées par
+ *    `applyThemeColors()` à partir des couleurs enregistrées en base. Les
+ *    nuances sont générées pour respecter un contraste AA sur le fond du mode
+ *    courant (texte foncé sur fond clair, texte clair sur fond sombre).
+ *
+ * Les valeurs ci-dessous sont les valeurs par défaut (teal / violet) afin
+ * d'éviter tout flash avant le chargement de la configuration.
+ * ============================================================================
+ */
+
+:root {
+  /* Valeurs sombres, actives lorsque <html> porte la classe `.dark`. */
+  color-scheme: dark;
+
+  --surface: 2 6 23;
+  --surface-raised: 15 23 42;
+  --surface-overlay: 30 41 59;
+  --surface-strong: 51 65 85;
+
+  --card: 2 6 23;
+  --card-muted: 15 23 42;
+
+  --line: 30 41 59;
+  --line-strong: 82 97 116;
+
+  --content: 241 245 249;
+  --content-muted: 148 163 184;
+  --content-subtle: 139 154 176;
+  --content-inverted: 2 6 23;
+
+  --brand-50: 236 249 248;
+  --brand-100: 213 242 239;
+  --brand-200: 175 231 225;
+  --brand-300: 119 214 203;
+  --brand-400: 72 200 186;
+  --brand-500: 20 184 166;
+  --brand-600: 15 133 120;
+  --brand-700: 14 132 120;
+  --brand-800: 12 110 100;
+  --brand-900: 10 88 80;
+
+  --accent-50: 246 242 254;
+  --accent-100: 234 226 253;
+  --accent-200: 216 200 252;
+  --accent-300: 188 160 250;
+  --accent-400: 165 128 248;
+  --accent-500: 139 92 246;
+  --accent-600: 122 81 216;
+  --accent-700: 100 66 177;
+  --accent-800: 83 55 148;
+  --accent-900: 67 44 118;
+}
+
+html:not(.dark) {
+  color-scheme: light;
+
+  --surface: 248 250 252;
+  --surface-raised: 241 245 249;
+  --surface-overlay: 226 232 240;
+  --surface-strong: 203 213 225;
+
+  --card: 255 255 255;
+  --card-muted: 248 250 252;
+
+  --line: 226 232 240;
+  --line-strong: 124 139 161;
+
+  --content: 15 23 42;
+  --content-muted: 71 85 105;
+  --content-subtle: 82 97 116;
+  --content-inverted: 255 255 255;
+
+  --brand-50: 241 251 250;
+  --brand-100: 227 246 244;
+  --brand-200: 203 239 235;
+  --brand-300: 15 133 120;
+  --brand-400: 14 133 121;
+  --brand-500: 14 133 121;
+  --brand-600: 15 133 120;
+  --brand-700: 12 107 96;
+  --brand-800: 9 85 76;
+  --brand-900: 7 66 60;
+
+  --accent-50: 248 245 254;
+  --accent-100: 241 235 254;
+  --accent-200: 229 219 253;
+  --accent-300: 134 89 237;
+  --accent-400: 128 85 226;
+  --accent-500: 120 79 212;
+  --accent-600: 108 72 192;
+  --accent-700: 81 53 143;
+  --accent-800: 64 42 113;
+  --accent-900: 50 33 89;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    background-color: rgb(var(--surface));
+  }
+
+  body {
+    @apply bg-surface text-content antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+    transition:
+      background-color 200ms ease,
+      color 200ms ease;
+  }
+
+  ::selection {
+    background-color: rgb(var(--brand-500) / 0.3);
+    color: rgb(var(--content));
+  }
+
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid rgb(var(--brand-500));
+    outline-offset: 2px;
+  }
+
+  /* Barres de défilement discrètes, lisibles dans les deux modes. */
+  * {
+    scrollbar-color: rgb(var(--line-strong)) transparent;
+    scrollbar-width: thin;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--line-strong));
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply border border-line bg-card/80 backdrop-blur-md;
+  }
+}
+
+/*
+ * ============================================================================
+ * Densité & ergonomie tactile
+ * ============================================================================
+ * `data-density` est positionné sur <html> par DensityProvider. Le mode
+ * compact resserre les tableaux et les grilles métier denses (POS, KDS,
+ * planning) sans réduire les zones cliquables en dessous des seuils tactiles.
+ */
+html[data-density='compact'] table th,
+html[data-density='compact'] table td {
+  padding-top: 0.375rem !important;
+  padding-bottom: 0.375rem !important;
+}
+
+html[data-density='compact'] table {
+  font-size: 0.8125rem;
+}
+
+html[data-density='compact'] [data-dense] {
+  gap: 0.75rem !important;
+}
+
+html[data-density='compact'] [data-main] {
+  padding: 1rem !important;
+}
+
+@media (pointer: coarse) {
+  button,
+  [role='button'],
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    min-height: 2.75rem;
+  }
+
+  table th,
+  table td {
+    padding-top: 0.75rem !important;
+    padding-bottom: 0.75rem !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

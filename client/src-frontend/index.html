@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#f8fafc" />
+    <title>GymSoinsHealthy - Gestion salle de sport & bien-être</title>
+
+    <!--
+      Script anti-FOUC : applique le thème, la densité et les couleurs
+      whitelabel mises en cache AVANT le premier rendu. Il doit rester inline
+      et placé dans <head>, avant les styles de l'application.
+    -->
+    <script>
+      (function () {
+        try {
+          var root = document.documentElement;
+          var stored = localStorage.getItem('gymsoins_theme');
+          var mode =
+            stored === 'light' || stored === 'dark' || stored === 'system'
+              ? stored
+              : 'system';
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)')
+            .matches;
+          var dark = mode === 'dark' || (mode === 'system' && prefersDark);
+
+          root.classList.toggle('dark', dark);
+          root.dataset.theme = dark ? 'dark' : 'light';
+          root.style.colorScheme = dark ? 'dark' : 'light';
+
+          var themeColor = document.querySelector('meta[name="theme-color"]');
+          if (themeColor) {
+            themeColor.setAttribute('content', dark ? '#020617' : '#f8fafc');
+          }
+
+          root.dataset.density =
+            localStorage.getItem('gymsoins_density') === 'compact'
+              ? 'compact'
+              : 'comfortable';
+
+          var cached = localStorage.getItem('gymsoins_theme_vars');
+          if (cached) {
+            var palettes = JSON.parse(cached);
+            var palette = dark ? palettes.dark : palettes.light;
+            if (palette) {
+              Object.keys(palette).forEach(function (name) {
+                root.style.setProperty(name, palette[name]);
+              });
+            }
+          }
+        } catch (error) {
+          /* Stockage indisponible : les valeurs CSS par défaut s'appliquent. */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

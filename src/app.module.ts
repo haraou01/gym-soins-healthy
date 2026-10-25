@@ -1,0 +1,87 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bull';
+
+import {
+  configSchema,
+  jwtFactory,
+  licenseFactory,
+  postgresqlFactory,
+  redisFactory,
+} from './config';
+import { LicenseModule } from './core/security/license.module';
+import { SecurityModule } from './core/security/security.module';
+
+import { AuthModule } from './modules/auth/auth.module';
+import { BookingModule } from './modules/booking/booking.module';
+import { CareModule } from './modules/care/care.module';
+import { GymModule } from './modules/gym/gym.module';
+import { HealthyFoodModule } from './modules/healthy_food/healthy_food.module';
+import { LoyaltyModule } from './modules/loyalty/loyalty.module';
+import { MaintenanceModule } from './modules/maintenance/maintenance.module';
+import { SettingsModule } from './modules/settings/settings.module';
+import { ShopModule } from './modules/shop/shop.module';
+
+@Module({
+  imports: [
+    EventEmitterModule.forRoot(),
+
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: '.env',
+      load: [postgresqlFactory, redisFactory, jwtFactory, licenseFactory],
+      validationSchema: configSchema,
+    }),
+
+    // PostgreSQL
+    TypeOrmModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        ...configService.get('postgresql'),
+        autoLoadEntities: true,
+        synchronize: false,
+      }),
+    }),
+
+    // Redis (Bull Queue)
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        redis: configService.get('redis'),
+      }),
+    }),
+
+    // Licences + feature flags (HMAC-SHA256, hardware ID)
+    LicenseModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => {
+        const license = configService.get<{
+          secret: string;
+          devMode: boolean;
+        }>('license');
+
+        return {
+          secret: license.secret,
+          devMode: license.devMode,
+        };
+      },
+    }),
+
+    // Socle sécurité global (JWT, PermissionsGuard)
+    SecurityModule,
+
+    // Métiers
+    AuthModule,
+    GymModule,
+    CareModule,
+    BookingModule,
+    MaintenanceModule,
+    SettingsModule,
+    ShopModule,
+    LoyaltyModule,
+    HealthyFoodModule,
+  ],
+})
+export class AppModule {}

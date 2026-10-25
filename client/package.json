@@ -1,0 +1,21 @@
+{
+  "name": "gym-soins-healthy-client",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Interface client - Gestion de salle de sport et bien-être",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "frontend:dev": "vite --config src-frontend/vite.config.ts",
+    "frontend:build": "tsc --noEmit && vite build --config src-frontend/vite.config.ts",
+    "frontend:preview": "vite preview --config src-frontend/vite.config.ts"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.4.0"
+  },
+  "packageManager": "npm@10.9.2"
+}

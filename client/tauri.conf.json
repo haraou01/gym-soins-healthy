@@ -1,0 +1,45 @@
+{
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.gymsoinshealthy.client",
+      "name": "GymSoinsHealthy",
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ]
+    },
+    "security": {
+      "csp": null,
+      "capabilities": []
+    },
+    "windows": [
+      {
+        "title": "GymSoinsHealthy - Gestion salle de sport & bien-être",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": ["'self'"],
+        "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "img-src": ["'self'", "data:", "https:"],
+        "connect-src": ["'self'", "http://localhost:3000", "ws://localhost:3000"]
+      }
+    }
+  },
+  "build": {
+    "frontendDist": "../src-frontend/dist",
+    "beforeBuildCommand": "npm run frontend:build",
+    "beforeDevCommand": "npm run frontend:dev",
+    "devUrl": "http://localhost:5173"
+  }
+}
