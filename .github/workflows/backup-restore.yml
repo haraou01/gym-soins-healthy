@@ -60,7 +60,6 @@ jobs:
       OBSERVABILITY_LOG_ENABLED: false
       RETENTION_PURGE_ENABLED: false
       OUTBOX_WORKER_ENABLED: false
-      BACKUP_DIR: ${{ runner.temp }}/backups
 
     steps:
       - name: Checkout
@@ -101,6 +100,8 @@ jobs:
           SQL
 
       - name: Backup
+        env:
+          BACKUP_DIR: ${{ runner.temp }}/backups
         run: npm run backup
 
       - name: Create restore database
@@ -115,6 +116,7 @@ jobs:
       - name: Restore
         env:
           RESTORE_DATABASE: gymsoins_restore_check
+          BACKUP_DIR: ${{ runner.temp }}/backups
         run: |
           BACKUP_FILE="$(ls -t "${BACKUP_DIR}"/*.dump | head -1)" npm run restore
 
