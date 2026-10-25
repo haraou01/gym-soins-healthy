@@ -6,6 +6,6 @@ import { RetentionWorkerService } from './retention.worker';
 @Global()
 @Module({
   providers: [RetentionService, RetentionWorkerService],
-  exports: [RetentionService],
+  exports: [RetentionService, RetentionWorkerService],
 })
 export class RetentionModule {}

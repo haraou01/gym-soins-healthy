@@ -175,7 +175,17 @@ POSTGRES_DATABASE=gymsoins_test \
 npm run load:test
 ```
 
-Il mesure throughput, p50/p95/p99, statuts HTTP, erreurs, conflits et un instantané des métriques Outbox/DB. Utiliser une base isolée : les données créées sont nettoyées par le script via `LOAD_CLEANUP=true` par défaut.
+Il mesure throughput, p50/p95/p99, statuts HTTP, erreurs, conflits et un instantané des métriques Outbox/DB/locks.
+
+Scénario complet :
+
+```bash
+LOAD_SCENARIO=matrix POSTGRES_DATABASE=gymsoins_test npm run load:test
+```
+
+La matrice couvre Booking 100 et 500 requêtes en concurrence 10/25/50, Shop 100/500 et KDS création/statut 100/500. Résultats et limites : `docs/load-tests.md`.
+
+Utiliser une base isolée : les données créées sont nettoyées par le script via `LOAD_CLEANUP=true` par défaut.
 
 ## Licence Plug-and-Play
 
@@ -215,7 +225,7 @@ La clé, l'opération métier et le résultat sont commités dans la même trans
 
 ### Outbox transactionnelle
 
-Les événements critiques (`sale.completed`, `kitchen.order.created`) sont écrits dans `outbox_events` dans la transaction métier. Un worker PostgreSQL traite les événements avec `FOR UPDATE SKIP LOCKED`, retries et backoff.
+Les événements critiques (`sale.completed`, `kitchen.order.created`, `kitchen.order.status_changed`) sont écrits dans `outbox_events` dans la transaction métier. Un worker PostgreSQL traite les événements avec `FOR UPDATE SKIP LOCKED`, retries et backoff.
 
 Endpoints d'exploitation (SUPER_ADMIN) :
 
@@ -259,7 +269,7 @@ Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise Postg
 - PostgreSQL reste la source de vérité ; le SSE ne fait que notifier.
 - Métriques : `kds_sse_connections_total`, `kds_sse_disconnects_total`, `kds_sse_active_connections`, `kds_events_published_total`, `kds_poll_errors_total`.
 
-Le modèle actuel est mono-établissement : le tenant par défaut est `default`. Le filtrage multi-tenant est préparé dans le ticket et le flux, mais devra être relié à un modèle tenant réel.
+Le modèle actuel est mono-établissement : le tenant par défaut est `default`. Le filtrage multi-tenant est préparé dans le ticket et le flux, mais devra être relié à un modèle tenant réel. L'audit complet et la décision sont dans `docs/tenant-isolation-audit.md`.
 
 ### Observabilité
 
@@ -267,8 +277,13 @@ Le modèle actuel est mono-établissement : le tenant par défaut est `default`.
 - En-tête `X-Request-Id` accepté et propagé.
 - Tracing W3C : `traceparent`, `X-Trace-Id`, `traceId`/`spanId` dans les logs et les événements Outbox.
 - Métriques Prometheus : `GET /api/v1/observability/metrics` (SUPER_ADMIN).
-- Métriques HTTP, erreurs, DB PostgreSQL, Outbox et worker.
+- Scrape Prometheus : `GET /internal/metrics` avec `Authorization: Bearer <METRICS_TOKEN>`.
+- Health API : `GET /health`; readiness DB : `GET /ready`; version/commit exposés.
+- Métriques HTTP, erreurs, DB PostgreSQL (connexions, max_connections, locks), Outbox, workers, rétention, KDS SSE et auth.
+- OpenTelemetry : SDK Node, instrumentation HTTP/Express/pg/Nest, export OTLP configurable via `OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`. Prometheus reste dédié aux métriques.
+- Vérification OTLP réelle : `npm run verify:otel` (collecteur de test local, spans HTTP + PostgreSQL + Outbox API/worker).
 - Erreurs HTTP enrichies avec `requestId` et `traceId`.
+- Alertes et dashboard provisionnables : `ops/prometheus/alerts.yml`, `ops/grafana/dashboards/gymsoins-overview.json`, validation `npm run validate:ops`.
 
 ### Rétention
 
@@ -282,7 +297,10 @@ POST /api/v1/observability/retention/run
 - outbox : uniquement `PROCESSED` expirés ;
 - `PENDING`, `PROCESSING`, `FAILED` sont conservés ;
 - purge par lots et métriques dédiées ;
-- worker de purge périodique configurable.
+- worker de rétention **séparé** : `npm run start:retention` ;
+- health/readiness/metrics sur `RETENTION_WORKER_HEALTH_PORT` (3003) ;
+- verrou PostgreSQL advisory pour éviter les doubles exécutions ;
+- l'API ne planifie pas la purge par défaut (`RETENTION_PURGE_ENABLED=false`).
 
 ### Sécurité HTTP
 
@@ -317,6 +335,14 @@ Impacts :
 - les dumps PostgreSQL contiennent des hashes de mots de passe : les protéger comme des secrets.
 
 Le contrôle `npm run audit:secrets` vérifie les fichiers versionnés. Il est exécuté en CI.
+
+## Documents Phase 3
+
+- `docs/tenant-isolation-audit.md` — audit tenant KDS et limite mono-tenant.
+- `docs/load-tests.md` — protocole, machine et résultats p50/p95/p99.
+- `docs/npm-audit.md` — triage dépendances et décisions.
+- `docs/staging-deployment.md` — CI/staging, blocages externes et prérequis.
+- `ops/README.md` — Prometheus/Grafana, métriques et alertes.
 
 ## Notes de sécurité
 

@@ -4,14 +4,12 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { BullModule } from '@nestjs/bull';
 
 import {
   configSchema,
   jwtFactory,
   licenseFactory,
   postgresqlFactory,
-  redisFactory,
 } from './config';
 import { LicenseModule } from './core/security/license.module';
 import { SecurityModule } from './core/security/security.module';
@@ -36,15 +34,15 @@ import { ShopModule } from './modules/shop/shop.module';
 
     ThrottlerModule.forRoot([
       {
-        ttl: 60_000,
-        limit: 300,
+        ttl: Number(process.env.THROTTLE_TTL_MS || 60_000),
+        limit: Number(process.env.THROTTLE_LIMIT || 300),
       },
     ]),
 
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
-      load: [postgresqlFactory, redisFactory, jwtFactory, licenseFactory],
+      load: [postgresqlFactory, jwtFactory, licenseFactory],
       validationSchema: configSchema,
     }),
 
@@ -55,14 +53,6 @@ import { ShopModule } from './modules/shop/shop.module';
         ...configService.get('postgresql'),
         autoLoadEntities: true,
         synchronize: false,
-      }),
-    }),
-
-    // Redis (Bull Queue)
-    BullModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        redis: configService.get('redis'),
       }),
     }),
 

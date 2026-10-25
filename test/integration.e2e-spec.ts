@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 
 import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -975,6 +975,41 @@ describe('GymSoinsHealthy — validation E2E', () => {
       expect(typeof ticket.body.ticket).toBe('string');
       expect(ticket.body.ticket.length).toBeGreaterThan(20);
       expect(ticket.body.expiresAt).toBeTruthy();
+    });
+
+    it('rejette les tickets expirés et invalides', async () => {
+      const ticketService = app.get(KdsStreamTicketService);
+      const dataSource = app.get(DataSource);
+      const created = await ticketService.create('e2e-expired', 'CHEF');
+      const tokenHash = createHash('sha256')
+        .update(created.ticket)
+        .digest('hex');
+
+      await dataSource.query(
+        `UPDATE kds_stream_tickets
+         SET "expiresAt" = NOW() - INTERVAL '1 second'
+         WHERE "tokenHash" = $1`,
+        [tokenHash],
+      );
+
+      await expect(ticketService.consume(created.ticket)).resolves.toBeNull();
+      await expect(ticketService.consume('not-a-valid-ticket')).resolves.toBeNull();
+    });
+
+    it('ne permet pas au client de choisir un tenant dans la requête', async () => {
+      const ticketService = app.get(KdsStreamTicketService);
+      const response = await http
+        .post(
+          '/api/v1/healthy-food/kds/stream-ticket?tenantId=tenant-b&tenant=tenant-b',
+        )
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({ tenantId: 'tenant-b', tenant: 'tenant-b' })
+        .expect(200);
+
+      const session = await ticketService.consume(response.body.ticket);
+
+      // Le tenant du ticket est dérivé du contexte serveur, jamais du body/query.
+      expect(session).toMatchObject({ tenantId: 'default' });
     });
   });
 

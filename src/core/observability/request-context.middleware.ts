@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import {
+  context as otelContext,
+  isSpanContextValid,
+  trace as otelTrace,
+} from '@opentelemetry/api';
 import type { NextFunction, Request, Response } from 'express';
 
 import {
@@ -40,7 +45,17 @@ export function requestContextMiddleware(
   const traceparent = Array.isArray(incomingTraceparent)
     ? incomingTraceparent[0]
     : incomingTraceparent;
-  const traceContext = createTraceContext(traceparent);
+  const activeSpanContext = otelTrace.getSpan(
+    otelContext.active(),
+  )?.spanContext();
+  const traceContext =
+    activeSpanContext && isSpanContextValid(activeSpanContext)
+      ? {
+          traceId: activeSpanContext.traceId,
+          spanId: activeSpanContext.spanId,
+          parentSpanId: undefined,
+        }
+      : createTraceContext(traceparent);
 
   request.traceId = traceContext.traceId;
   response.setHeader('X-Trace-Id', traceContext.traceId);

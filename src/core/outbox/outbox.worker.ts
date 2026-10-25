@@ -25,9 +25,16 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
       this.configService.get<string>('OUTBOX_WORKER_ENABLED') !== 'false';
 
     if (!enabled) {
+      metrics.setGauge('outbox_worker_up', 0);
       this.logger.log('Outbox worker désactivé par configuration.');
       return;
     }
+
+    metrics.setGauge('outbox_worker_up', 1);
+    metrics.setGauge(
+      'outbox_worker_heartbeat_timestamp_seconds',
+      Date.now() / 1_000,
+    );
 
     const rawInterval = Number(
       this.configService.get<string | number>('OUTBOX_POLL_INTERVAL_MS'),
@@ -48,6 +55,8 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+
+    metrics.setGauge('outbox_worker_up', 0);
   }
 
   private async tick(): Promise<void> {
@@ -57,6 +66,10 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
 
     this.running = true;
     metrics.inc('outbox_worker_ticks_total');
+    metrics.setGauge(
+      'outbox_worker_heartbeat_timestamp_seconds',
+      Date.now() / 1_000,
+    );
 
     try {
       const processed = await this.outboxService.processBatch();
@@ -73,6 +86,10 @@ export class OutboxWorkerService implements OnModuleInit, OnModuleDestroy {
       );
     } finally {
       this.running = false;
+      metrics.setGauge(
+        'outbox_worker_heartbeat_timestamp_seconds',
+        Date.now() / 1_000,
+      );
     }
   }
 }

@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import {
+  SpanKind,
+  SpanStatusCode,
+  context as otelContext,
+  trace as otelTrace,
+} from '@opentelemetry/api';
 import { DataSource, EntityManager } from 'typeorm';
 
 import { metrics } from '../observability/metrics.registry';
@@ -47,6 +53,7 @@ export interface OutboxStats {
 
 @Injectable()
 export class OutboxService {
+  private readonly tracer = otelTrace.getTracer('gymsoins-outbox');
   private readonly maxAttempts: number;
   private readonly baseBackoffMs: number;
   private readonly maxBackoffMs: number;
@@ -74,24 +81,50 @@ export class OutboxService {
     input: AppendOutboxEventInput,
   ): Promise<string> {
     const trace = getTraceContext();
-    const rows = await manager.query(
-      `
-        INSERT INTO "outbox_events"
-          ("eventType", "aggregateType", "aggregateId", "payload", "status", "traceId", "spanId")
-        VALUES ($1, $2, $3, $4::jsonb, 'PENDING', $5, $6)
-        RETURNING "id"
-      `,
-      [
-        input.eventType,
-        input.aggregateType,
-        input.aggregateId,
-        JSON.stringify(input.payload) ?? 'null',
-        trace?.traceId ?? null,
-        trace?.spanId ?? null,
-      ],
-    );
+    const span = this.tracer.startSpan('outbox.append', {
+      kind: SpanKind.PRODUCER,
+      attributes: {
+        'messaging.system': 'postgresql',
+        'messaging.operation': 'publish',
+        'messaging.destination.name': 'outbox_events',
+        'gymsoins.event_type': input.eventType,
+        'gymsoins.aggregate_type': input.aggregateType,
+        'gymsoins.aggregate_id': input.aggregateId,
+      },
+    });
 
-    return rows[0].id;
+    try {
+      const rows = await manager.query(
+        `
+          INSERT INTO "outbox_events"
+            ("eventType", "aggregateType", "aggregateId", "payload", "status", "traceId", "spanId")
+          VALUES ($1, $2, $3, $4::jsonb, 'PENDING', $5, $6)
+          RETURNING "id"
+        `,
+        [
+          input.eventType,
+          input.aggregateType,
+          input.aggregateId,
+          JSON.stringify(input.payload) ?? 'null',
+          trace?.traceId ?? null,
+          trace?.spanId ?? null,
+        ],
+      );
+
+      span.setStatus({ code: SpanStatusCode.OK });
+      return rows[0].id;
+    } catch (error) {
+      span.recordException(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    } finally {
+      span.end();
+    }
   }
 
   /**
@@ -258,44 +291,80 @@ export class OutboxService {
       : rootContext;
     const startedAt = Date.now();
 
-    await runWithTraceContext(context, async () => {
-      try {
-        const payload =
-          event.payload && typeof event.payload === 'object'
-            ? { ...(event.payload as Record<string, unknown>) }
-            : { data: event.payload };
+    const parentContext = event.traceId
+      ? otelTrace.setSpanContext(otelContext.active(), {
+          traceId: event.traceId,
+          spanId: rootContext.spanId,
+          traceFlags: 1,
+        })
+      : otelContext.active();
 
-        await this.eventEmitter.emitAsync(event.eventType, {
-          ...payload,
-          outboxEventId: event.id,
-        });
+    await this.tracer.startActiveSpan(
+      'outbox.process',
+      {
+        kind: SpanKind.CONSUMER,
+        attributes: {
+          'messaging.system': 'postgresql',
+          'messaging.operation': 'process',
+          'messaging.destination.name': 'outbox_events',
+          'messaging.message.id': event.id,
+          'gymsoins.event_type': event.eventType,
+          'gymsoins.aggregate_type': event.aggregateType,
+          'gymsoins.aggregate_id': event.aggregateId,
+          'gymsoins.outbox.attempts': Number(event.attempts),
+        },
+      },
+      parentContext,
+      async (span) => {
+        await runWithTraceContext(context, async () => {
+          try {
+            const payload =
+              event.payload && typeof event.payload === 'object'
+                ? { ...(event.payload as Record<string, unknown>) }
+                : { data: event.payload };
 
-        await this.markProcessed(event.id);
-        metrics.inc('outbox_events_processed_total', {
-          eventType: event.eventType,
+            await this.eventEmitter.emitAsync(event.eventType, {
+              ...payload,
+              outboxEventId: event.id,
+            });
+
+            await this.markProcessed(event.id);
+            metrics.inc('outbox_events_processed_total', {
+              eventType: event.eventType,
+            });
+            span.setStatus({ code: SpanStatusCode.OK });
+            writeJsonLog('info', 'outbox.event.processed', 'Outbox', {
+              outboxEventId: event.id,
+              eventType: event.eventType,
+              aggregateType: event.aggregateType,
+              aggregateId: event.aggregateId,
+              traceId: context.traceId,
+              spanId: context.spanId,
+              parentSpanId: context.parentSpanId ?? null,
+              durationMs: Date.now() - startedAt,
+            });
+          } catch (error) {
+            span.recordException(
+              error instanceof Error ? error : new Error(String(error)),
+            );
+            span.setStatus({
+              code: SpanStatusCode.ERROR,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            writeJsonLog('warn', 'outbox.event.failed', 'Outbox', {
+              outboxEventId: event.id,
+              eventType: event.eventType,
+              traceId: context.traceId,
+              spanId: context.spanId,
+              parentSpanId: context.parentSpanId ?? null,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            await this.markFailed(event, error);
+          }
         });
-        writeJsonLog('info', 'outbox.event.processed', 'Outbox', {
-          outboxEventId: event.id,
-          eventType: event.eventType,
-          aggregateType: event.aggregateType,
-          aggregateId: event.aggregateId,
-          traceId: context.traceId,
-          spanId: context.spanId,
-          parentSpanId: context.parentSpanId ?? null,
-          durationMs: Date.now() - startedAt,
-        });
-      } catch (error) {
-        writeJsonLog('warn', 'outbox.event.failed', 'Outbox', {
-          outboxEventId: event.id,
-          eventType: event.eventType,
-          traceId: context.traceId,
-          spanId: context.spanId,
-          parentSpanId: context.parentSpanId ?? null,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        await this.markFailed(event, error);
-      }
-    });
+        span.end();
+      },
+    );
   }
 
   private async markProcessed(id: string): Promise<void> {

@@ -1,3 +1,4 @@
+import './core/telemetry/register';
 import 'reflect-metadata';
 
 import { createServer } from 'node:http';
@@ -8,6 +9,7 @@ import { DataSource } from 'typeorm';
 import { AppModule } from './app.module';
 import { JsonLogger, MetricsService, writeJsonLog } from './core/observability';
 import { OutboxService } from './core/outbox';
+import { shutdownTelemetry } from './core/telemetry';
 
 /**
  * Entrypoint du worker Outbox dédié.
@@ -105,6 +107,7 @@ async function bootstrap(): Promise<void> {
 
     server.close();
     await app.close();
+    await shutdownTelemetry();
     clearTimeout(forceExit);
     process.exit(0);
   };

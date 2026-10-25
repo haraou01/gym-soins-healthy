@@ -12,8 +12,9 @@ const concurrency = Number(process.env.LOAD_CONCURRENCY || 10);
 let token = '';
 const cleanup = {
   saleIds: [],
-  bookingClientPrefix: '',
-  kdsClientPrefix: '',
+  bookingClientPrefixes: [],
+  kdsClientPrefixes: [],
+  kdsOrderIds: [],
   productSkus: [],
   ingredientIds: [],
   dishIds: [],
@@ -64,6 +65,7 @@ async function pool(total, parallel, task) {
           results.push({
             status: response.status,
             durationMs: Date.now() - start,
+            body: response.body,
           });
         } catch (error) {
           results.push({
@@ -80,7 +82,7 @@ async function pool(total, parallel, task) {
   return { results, durationMs };
 }
 
-function summarize(name, run) {
+function summarize(name, run, parallel = concurrency) {
   const durations = run.results.map((r) => r.durationMs).sort((a, b) => a - b);
   const percentile = (p) =>
     durations.length === 0
@@ -93,7 +95,7 @@ function summarize(name, run) {
   return {
     scenario: name,
     requests: run.results.length,
-    concurrency,
+    concurrency: parallel,
     durationMs: run.durationMs,
     throughputRps: Number(
       (run.results.length / Math.max(run.durationMs, 1) * 1000).toFixed(2),
@@ -106,13 +108,13 @@ function summarize(name, run) {
   };
 }
 
-async function runBooking() {
-  const prefix = `load-booking-${Date.now()}`;
-  cleanup.bookingClientPrefix = prefix;
+async function runBooking(total = requests, parallel = concurrency) {
+  const prefix = `load-booking-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  cleanup.bookingClientPrefixes.push(prefix);
   const start = Date.now() + 3_600_000;
   const end = start + 3_600_000;
 
-  const unique = await pool(requests, concurrency, (index) =>
+  const unique = await pool(total, parallel, (index) =>
     api('/bookings', {
       method: 'POST',
       body: JSON.stringify({
@@ -127,7 +129,7 @@ async function runBooking() {
   );
 
   const resourceId = randomUUID();
-  const conflict = await pool(requests, concurrency, (index) =>
+  const conflict = await pool(total, parallel, (index) =>
     api('/bookings', {
       method: 'POST',
       body: JSON.stringify({
@@ -141,11 +143,14 @@ async function runBooking() {
     }),
   );
 
-  return [summarize('booking-unique', unique), summarize('booking-conflict', conflict)];
+  return [
+    summarize(`booking-unique-${total}@${parallel}`, unique, parallel),
+    summarize(`booking-conflict-${total}@${parallel}`, conflict, parallel),
+  ];
 }
 
-async function runShop() {
-  const suffix = Date.now();
+async function runShop(total = requests, parallel = concurrency) {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const sku = `LOAD-SHOP-${suffix}`;
   cleanup.productSkus.push(sku);
   const product = await api('/shop', {
@@ -154,14 +159,14 @@ async function runShop() {
       name: `Load product ${suffix}`,
       sku,
       price: 10,
-      stockQuantity: requests,
+      stockQuantity: total,
       category: 'BOISSON',
       isActive: true,
     }),
   });
   if (product.status !== 201) throw new Error(JSON.stringify(product.body));
 
-  const run = await pool(requests, concurrency, (index) =>
+  const run = await pool(total, parallel, (index) =>
     api('/shop/sales/process', {
       method: 'POST',
       headers: { 'Idempotency-Key': `load-shop-${suffix}-${index}` },
@@ -172,21 +177,23 @@ async function runShop() {
     }),
   );
   for (const result of run.results) {
-    void result;
+    if (result.status === 201 && result.body?.saleId) {
+      cleanup.saleIds.push(result.body.saleId);
+    }
   }
 
-  return [summarize('shop-sales', run)];
+  return [summarize(`shop-sales-${total}@${parallel}`, run, parallel)];
 }
 
-async function runKds() {
-  const suffix = Date.now();
+async function runKds(total = requests, parallel = concurrency) {
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   const ingredientName = `Load ingredient ${suffix}`;
   const ingredient = await api('/healthy-food/ingredients', {
     method: 'POST',
     body: JSON.stringify({
       name: ingredientName,
       unit: 'UNITE',
-      stockQuantity: requests,
+      stockQuantity: total,
       alertThreshold: 0,
     }),
   });
@@ -216,7 +223,7 @@ async function runKds() {
 
   const prefix = `load-kds-${suffix}`;
   cleanup.kdsClientPrefix = prefix;
-  const run = await pool(requests, concurrency, (index) =>
+  const run = await pool(total, parallel, (index) =>
     api('/healthy-food/orders', {
       method: 'POST',
       headers: { 'Idempotency-Key': `load-kds-${suffix}-${index}` },
@@ -228,7 +235,22 @@ async function runKds() {
     }),
   );
 
-  return [summarize('kds-orders', run)];
+  const orderIds = run.results
+    .filter((result) => result.status === 201 && result.body?.id)
+    .map((result) => result.body.id);
+  cleanup.kdsOrderIds.push(...orderIds);
+
+  const statusRun = await pool(orderIds.length, parallel, (index) =>
+    api(`/healthy-food/orders/${orderIds[index]}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status: 'EN_PREPARATION' }),
+    }),
+  );
+
+  return [
+    summarize(`kds-orders-${total}@${parallel}`, run, parallel),
+    summarize(`kds-status-${total}@${parallel}`, statusRun, parallel),
+  ];
 }
 
 async function metricsSnapshot() {
@@ -238,12 +260,15 @@ async function metricsSnapshot() {
   const wanted = [
     'outbox_events{',
     'db_connections',
+    'db_max_connections',
+    'db_locks{',
+    'outbox_worker',
     'http_requests_total',
   ];
   return String(response.body)
     .split('\n')
     .filter((line) => wanted.some((prefix) => line.startsWith(prefix)))
-    .slice(0, 20);
+    .slice(0, 50);
 }
 
 async function cleanupDatabase() {
@@ -261,9 +286,9 @@ async function cleanupDatabase() {
   await client.connect();
 
   try {
-    if (cleanup.bookingClientPrefix) {
+    for (const prefix of cleanup.bookingClientPrefixes) {
       await client.query('DELETE FROM bookings WHERE "clientId" LIKE $1', [
-        `${cleanup.bookingClientPrefix}%`,
+        `${prefix}%`,
       ]);
     }
 
@@ -295,9 +320,23 @@ async function cleanupDatabase() {
       }
     }
 
-    if (cleanup.kdsClientPrefix) {
+    if (cleanup.saleIds.length > 0) {
+      await client.query(
+        'DELETE FROM outbox_events WHERE "aggregateId" = ANY($1::text[])',
+        [cleanup.saleIds],
+      );
+    }
+
+    if (cleanup.kdsOrderIds.length > 0) {
+      await client.query(
+        'DELETE FROM outbox_events WHERE "aggregateId" = ANY($1::text[])',
+        [cleanup.kdsOrderIds],
+      );
+    }
+
+    for (const prefix of cleanup.kdsClientPrefixes) {
       await client.query('DELETE FROM kitchen_orders WHERE "clientId" LIKE $1', [
-        `${cleanup.kdsClientPrefix}%`,
+        `${prefix}%`,
       ]);
     }
 
@@ -337,6 +376,29 @@ async function main() {
     }
     if (scenario === 'all' || scenario === 'kds') {
       results.push(...(await runKds()));
+    }
+    if (scenario === 'matrix') {
+      for (const [total, parallel] of [
+        [100, 10],
+        [100, 25],
+        [100, 50],
+        [500, 25],
+        [500, 50],
+      ]) {
+        results.push(...(await runBooking(total, parallel)));
+      }
+      for (const [total, parallel] of [
+        [100, 25],
+        [500, 50],
+      ]) {
+        results.push(...(await runShop(total, parallel)));
+      }
+      for (const [total, parallel] of [
+        [100, 25],
+        [500, 50],
+      ]) {
+        results.push(...(await runKds(total, parallel)));
+      }
     }
 
     const metrics = await metricsSnapshot();

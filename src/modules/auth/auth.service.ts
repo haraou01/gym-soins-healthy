@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 
+import { metrics } from '../../core/observability/metrics.registry';
 import type { LoginResponse, RegistrationDto, Role } from './index';
 import { AuthAuditService } from './auth-audit.service';
 import { RBAC_PERMISSIONS } from './permissions';
@@ -111,6 +112,7 @@ export class AuthService {
         LOGIN_LOCK_WINDOW_MINUTES,
       )
     ) {
+      metrics.inc('auth_account_locked_total');
       await this.authAuditService.record({
         action: 'LOGIN',
         email: normalizedEmail,

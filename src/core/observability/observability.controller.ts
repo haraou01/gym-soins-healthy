@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 
 import { Roles, RolesGuard } from '../security';
-import { RetentionService } from '../retention';
+import { RetentionWorkerService } from '../retention';
 import { MetricsService } from './metrics.service';
 
 @Controller('api/v1/observability')
@@ -18,7 +18,7 @@ import { MetricsService } from './metrics.service';
 export class ObservabilityController {
   constructor(
     private readonly metricsService: MetricsService,
-    private readonly retentionService: RetentionService,
+    private readonly retentionWorker: RetentionWorkerService,
   ) {}
 
   @Get('metrics')
@@ -30,6 +30,6 @@ export class ObservabilityController {
   @Post('retention/run')
   @HttpCode(HttpStatus.OK)
   async runRetention() {
-    return this.retentionService.runAll();
+    return this.retentionWorker.runNow();
   }
 }

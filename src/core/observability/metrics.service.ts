@@ -49,6 +49,24 @@ export class MetricsService {
         );
       lines.push(`db_connections ${Number(connectionRows[0]?.count ?? 0)}`);
 
+      const lockRows: Array<{ waiting: string; granted: string }> =
+        await this.dataSource.query(`
+          SELECT
+            COUNT(*) FILTER (WHERE NOT granted)::text AS waiting,
+            COUNT(*) FILTER (WHERE granted)::text AS granted
+          FROM pg_locks
+        `);
+      lines.push(`db_locks{state="waiting"} ${Number(lockRows[0]?.waiting ?? 0)}`);
+      lines.push(`db_locks{state="granted"} ${Number(lockRows[0]?.granted ?? 0)}`);
+
+      const maxConnectionsRows: Array<{ setting: string }> =
+        await this.dataSource.query(
+          `SELECT setting FROM pg_settings WHERE name = 'max_connections'`,
+        );
+      lines.push(
+        `db_max_connections ${Number(maxConnectionsRows[0]?.setting ?? 0)}`,
+      );
+
       const sizeRows: Array<{ size: string }> = await this.dataSource.query(
         `SELECT pg_database_size(current_database())::text AS size`,
       );

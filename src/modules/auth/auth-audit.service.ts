@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { MoreThan, Repository } from 'typeorm';
 
+import { metrics } from '../../core/observability/metrics.registry';
 import { SecurityAuditLog } from './entities/security-audit-log.entity';
 
 export interface AuditEventInput {
@@ -27,6 +28,11 @@ export class AuthAuditService {
    * Journalise un événement sensible sans jamais bloquer l'authentification.
    */
   async record(input: AuditEventInput): Promise<void> {
+    metrics.inc('auth_events_total', {
+      action: input.action,
+      success: String(input.success),
+    });
+
     try {
       await this.auditRepository.save(
         this.auditRepository.create({

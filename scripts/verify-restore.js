@@ -1,5 +1,7 @@
 require('dotenv').config();
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { Client } = require('pg');
 
 const sourceDatabase = process.env.POSTGRES_DATABASE || 'gymsoins';
@@ -14,6 +16,21 @@ const settings = {
 
 function client(database) {
   return new Client({ ...settings, database });
+}
+
+function writeMetrics(values) {
+  const file = process.env.RESTORE_METRICS_FILE;
+  if (!file) {
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lines = [
+    '# HELP gymsoins_restore_last_success_timestamp_seconds Dernière vérification restore réussie',
+    '# TYPE gymsoins_restore_last_success_timestamp_seconds gauge',
+    ...Object.entries(values).map(([key, value]) => `${key} ${value}`),
+  ];
+  fs.writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o644 });
 }
 
 async function main() {
@@ -125,6 +142,16 @@ async function main() {
 
     if (mismatches.length > 0) {
       process.exitCode = 1;
+      writeMetrics({
+        gymsoins_restore_last_failure_timestamp_seconds: Date.now() / 1_000,
+        gymsoins_restore_last_mismatches: mismatches.length,
+      });
+    } else {
+      writeMetrics({
+        gymsoins_restore_last_success_timestamp_seconds: Date.now() / 1_000,
+        gymsoins_restore_last_tables_checked: sourceNames.length,
+        gymsoins_restore_last_mismatches: 0,
+      });
     }
   } finally {
     await source.end().catch(() => undefined);
@@ -133,6 +160,9 @@ async function main() {
 }
 
 main().catch((error) => {
+  writeMetrics({
+    gymsoins_restore_last_failure_timestamp_seconds: Date.now() / 1_000,
+  });
   process.stderr.write(
     `${JSON.stringify({
       event: 'restore.verify.failed',

@@ -16,7 +16,7 @@ jobs:
   build-and-test:
     name: Build backend, frontend & E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -63,6 +63,32 @@ jobs:
       - name: Audit secrets
         run: npm run audit:secrets
 
+      - name: Validate observability assets
+        run: npm run validate:ops
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Migration test — blank database
+        env:
+          PGPASSWORD: gymsoins
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 55432
+          POSTGRES_USERNAME: gymsoins
+          POSTGRES_PASSWORD: gymsoins
+          POSTGRES_DATABASE: gymsoins_migration_blank
+        run: |
+          psql -h 127.0.0.1 -p 55432 -U gymsoins -d postgres -v ON_ERROR_STOP=1 \
+            -c 'DROP DATABASE IF EXISTS gymsoins_migration_blank;' \
+            -c 'CREATE DATABASE gymsoins_migration_blank;'
+          npm run db:migrate
+          npm run db:migrate
+          EXPECTED="$(find src/database/migrations -maxdepth 1 -name '*.sql' | wc -l | tr -d ' ')"
+          COUNT="$(psql -h 127.0.0.1 -p 55432 -U gymsoins -d gymsoins_migration_blank -tAc 'SELECT COUNT(*) FROM schema_migrations;')"
+          test "$COUNT" = "$EXPECTED"
+
       - name: Run E2E tests
         env:
           TEST_PG_HOST: 127.0.0.1
@@ -71,3 +97,54 @@ jobs:
           TEST_PG_PASSWORD: gymsoins
           TEST_PG_DATABASE: gymsoins_ci
         run: npx jest --config ./test/jest-e2e.json --runInBand
+
+      - name: Verify OpenTelemetry OTLP export
+        env:
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 55432
+          POSTGRES_USERNAME: gymsoins
+          POSTGRES_PASSWORD: gymsoins
+          POSTGRES_DATABASE: gymsoins_ci
+        run: npm run verify:otel
+
+      - name: Retention worker smoke
+        env:
+          NODE_ENV: test
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 55432
+          POSTGRES_USERNAME: gymsoins
+          POSTGRES_PASSWORD: gymsoins
+          POSTGRES_DATABASE: gymsoins_ci
+          JWT_SECRET: ci-jwt-secret-change-me
+          LICENSE_DEV_MODE: true
+          OUTBOX_WORKER_ENABLED: false
+          RETENTION_PURGE_ENABLED: true
+          RETENTION_PURGE_INTERVAL_MS: 1000
+          RETENTION_WORKER_HEALTH_PORT: 3103
+        run: |
+          node dist/retention-worker.js > /tmp/retention-ci.log 2>&1 &
+          echo $! > /tmp/retention-ci.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3103/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:3103/health
+          curl -sf http://127.0.0.1:3103/metrics | grep 'retention_worker_up 1'
+          kill -TERM "$(cat /tmp/retention-ci.pid)"
+          wait "$(cat /tmp/retention-ci.pid)" || true
+
+      - name: Dependency audit — high production gate
+        run: |
+          npm audit --omit=dev --json > npm-audit.json || true
+          npm audit --omit=dev --audit-level=high
+
+      - name: Upload dependency audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit
+          path: npm-audit.json
+          if-no-files-found: ignore
+          retention-days: 14

@@ -26,6 +26,21 @@ function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
+function writeMetrics(values) {
+  const file = process.env.BACKUP_METRICS_FILE;
+  if (!file) {
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lines = [
+    '# HELP gymsoins_backup_last_success_timestamp_seconds Dernier backup réussi',
+    '# TYPE gymsoins_backup_last_success_timestamp_seconds gauge',
+    ...Object.entries(values).map(([key, value]) => `${key} ${value}`),
+  ];
+  fs.writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o644 });
+}
+
 function runDump(file) {
   return new Promise((resolve, reject) => {
     const command = dockerContainer ? 'docker' : 'pg_dump';
@@ -138,6 +153,14 @@ async function main() {
   fs.writeFileSync(`${file}.sha256`, `${checksum}  ${path.basename(file)}\n`);
 
   const removed = pruneOldBackups(file);
+  const completedAt = new Date();
+
+  writeMetrics({
+    gymsoins_backup_last_success_timestamp_seconds:
+      completedAt.getTime() / 1_000,
+    gymsoins_backup_last_size_bytes: stats.size,
+    gymsoins_backup_last_retention_days: retentionDays,
+  });
 
   process.stdout.write(
     `${JSON.stringify({
@@ -148,12 +171,15 @@ async function main() {
       sha256: checksum,
       retentionDays,
       oldBackupsRemoved: removed,
-      timestamp: new Date().toISOString(),
+      timestamp: completedAt.toISOString(),
     })}\n`,
   );
 }
 
 main().catch((error) => {
+  writeMetrics({
+    gymsoins_backup_last_failure_timestamp_seconds: Date.now() / 1_000,
+  });
   process.stderr.write(
     `${JSON.stringify({
       event: 'backup.failed',

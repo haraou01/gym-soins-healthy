@@ -12,13 +12,6 @@ export const postgresqlFactory = registerAs('postgresql', () => ({
   logging: process.env.NODE_ENV === 'development',
 }));
 
-// Configuration Redis / Bull Queue (files d'attente)
-export const redisFactory = registerAs('redis', () => ({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT, 10) || 6379,
-  password: process.env.REDIS_PASSWORD || undefined,
-}));
-
 // Configuration JWT / sécurité
 export const jwtFactory = registerAs('jwt', () => ({
   secret: process.env.JWT_SECRET || 'dev-secret-change-me',
@@ -60,10 +53,6 @@ export const configSchema = Joi.object({
   POSTGRES_PASSWORD: Joi.string().allow('').default(''),
   POSTGRES_DATABASE: Joi.string().default('gymsoins'),
 
-  REDIS_HOST: Joi.string().default('localhost'),
-  REDIS_PORT: Joi.number().default(6379),
-  REDIS_PASSWORD: Joi.string().allow('').optional(),
-
   JWT_SECRET: Joi.string().when('NODE_ENV', {
     is: 'production',
     then: Joi.string().min(32).required(),
@@ -90,6 +79,9 @@ export const configSchema = Joi.object({
   REQUEST_BODY_LIMIT: Joi.string().default('1mb'),
   TRUST_PROXY: Joi.boolean().default(false),
   OBSERVABILITY_LOG_ENABLED: Joi.boolean().default(true),
+  METRICS_TOKEN: Joi.string().min(16).allow('').optional(),
+  THROTTLE_TTL_MS: Joi.number().default(60_000),
+  THROTTLE_LIMIT: Joi.number().default(300),
 
   AUTH_LOGIN_EMAIL_MAX_ATTEMPTS: Joi.number().default(20),
   AUTH_LOGIN_IP_MAX_ATTEMPTS: Joi.number().default(30),
@@ -100,13 +92,15 @@ export const configSchema = Joi.object({
   AUTH_REFRESH_IP_MAX_ATTEMPTS: Joi.number().default(30),
   AUTH_REFRESH_RATE_WINDOW_SECONDS: Joi.number().default(60),
 
-  RETENTION_PURGE_ENABLED: Joi.boolean().default(true),
+  RETENTION_PURGE_ENABLED: Joi.boolean().default(false),
   RETENTION_PURGE_INTERVAL_MS: Joi.number().default(21_600_000),
   RETENTION_PURGE_MAX_BATCHES: Joi.number().default(20),
   IDEMPOTENCY_RETENTION_DAYS: Joi.number().default(30),
   IDEMPOTENCY_PURGE_BATCH_SIZE: Joi.number().default(500),
   OUTBOX_RETENTION_DAYS: Joi.number().default(30),
   OUTBOX_PURGE_BATCH_SIZE: Joi.number().default(500),
+  RETENTION_WORKER_HEALTH_HOST: Joi.string().default('127.0.0.1'),
+  RETENTION_WORKER_HEALTH_PORT: Joi.number().default(3003),
 
   OUTBOX_WORKER_ENABLED: Joi.boolean().allow('').optional(),
   OUTBOX_POLL_INTERVAL_MS: Joi.number().optional(),
@@ -119,4 +113,4 @@ export const configSchema = Joi.object({
   WORKER_HEALTH_PORT: Joi.number().default(3002),
 }).unknown(true);
 
-export default { postgresqlFactory, redisFactory, jwtFactory, licenseFactory, configSchema };
+export default { postgresqlFactory, jwtFactory, licenseFactory, configSchema };
