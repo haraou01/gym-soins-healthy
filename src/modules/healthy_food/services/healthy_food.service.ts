@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, QueryFailedError, Raw, Repository } from 'typeorm';
@@ -13,6 +12,11 @@ import {
   KITCHEN_ORDER_CREATED_EVENT,
   type KitchenOrderCreatedEvent,
 } from '../../../core/events';
+import {
+  IdempotencyService,
+  IDEMPOTENCY_SCOPES,
+} from '../../../core/idempotency';
+import { OutboxService } from '../../../core/outbox';
 import {
   AddDishIngredientDto,
   CreateDishDto,
@@ -46,7 +50,8 @@ export class HealthyFoodService {
     @InjectRepository(KitchenOrder)
     private readonly kitchenOrderRepository: Repository<KitchenOrder>,
     private readonly dataSource: DataSource,
-    private readonly eventEmitter: EventEmitter2,
+    private readonly idempotencyService: IdempotencyService,
+    private readonly outboxService: OutboxService,
   ) {}
 
   /** --- Ingrédients : inventaire --- */
@@ -290,7 +295,10 @@ export class HealthyFoodService {
    * - rupture de stock → BadRequestException et aucune écriture ;
    * - décrémentation des stocks puis enregistrement de la commande.
    */
-  async createKitchenOrder(dto: CreateKitchenOrderDto): Promise<KitchenOrder> {
+  async createKitchenOrder(
+    dto: CreateKitchenOrderDto,
+    idempotencyKey?: string,
+  ): Promise<KitchenOrder> {
     const items = dto.items ?? [];
 
     if (items.length === 0) {
@@ -301,8 +309,14 @@ export class HealthyFoodService {
 
     this.assertNoDuplicateDishes(items);
 
-    const order = await this.dataSource.transaction(async (manager) => {
-      const dishIds = [...new Set(items.map((item) => item.dishId))];
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      return this.idempotencyService.execute(
+        manager,
+        IDEMPOTENCY_SCOPES.HEALTHY_FOOD_ORDER,
+        idempotencyKey,
+        this.buildOrderIdempotencyPayload(dto),
+        async () => {
+          const dishIds = [...new Set(items.map((item) => item.dishId))];
       const dishes = await manager.getRepository(Dish).find({
         where: { id: In(dishIds) },
         relations: { ingredients: { ingredient: true } },
@@ -410,7 +424,7 @@ export class HealthyFoodService {
 
       const orderRepository = manager.getRepository(KitchenOrder);
 
-      return orderRepository.save(
+      const persistedOrder = await orderRepository.save(
         orderRepository.create({
           clientId: dto.clientId.trim(),
           status: KitchenOrderStatus.EN_ATTENTE,
@@ -418,26 +432,58 @@ export class HealthyFoodService {
           items: orderItems,
         }),
       );
+
+      const outboxEventId = await this.outboxService.append(manager, {
+        eventType: KITCHEN_ORDER_CREATED_EVENT,
+        aggregateType: 'kitchen_order',
+        aggregateId: persistedOrder.id,
+        payload: this.buildKitchenOrderCreatedEvent(persistedOrder),
+      });
+
+      return { order: persistedOrder, outboxEventId };
+        },
+      );
     });
 
-    // Événement optionnel : aucun listener (stock, caisse, analytics) n'est
-    // requis pour que la commande cuisine soit valide.
-    await this.emitKitchenOrderCreated(order);
+    if (!outcome.replayed) {
+      // Dispatch immédiat après commit ; le worker reprendra en cas d'échec.
+      await this.outboxService
+        .dispatchOne(outcome.value.outboxEventId)
+        .catch(() => undefined);
+    }
 
-    return order;
+    return outcome.value.order;
+  }
+
+  private buildOrderIdempotencyPayload(dto: CreateKitchenOrderDto): unknown {
+    return {
+      clientId: dto.clientId.trim(),
+      type: dto.type,
+      items: [...dto.items]
+        .sort((a, b) => a.dishId.localeCompare(b.dishId))
+        .map((item) => ({
+          dishId: item.dishId,
+          quantity: item.quantity,
+        })),
+    };
   }
 
   /**
-   * Émet `kitchen.order.created` après le commit.
-   * Les erreurs éventuelles d'un consommateur optionnel sont absorbées.
+   * Construit le payload métier de `kitchen.order.created`.
+   * L'événement est persisté dans l'outbox de la même transaction.
    */
-  private async emitKitchenOrderCreated(order: KitchenOrder): Promise<void> {
-    const event: KitchenOrderCreatedEvent = {
+  private buildKitchenOrderCreatedEvent(
+    order: KitchenOrder,
+  ): KitchenOrderCreatedEvent {
+    return {
       orderId: order.id,
       clientId: order.clientId,
       status: order.status,
       type: order.type,
-      createdAt: order.createdAt.toISOString(),
+      createdAt:
+        order.createdAt instanceof Date
+          ? order.createdAt.toISOString()
+          : String(order.createdAt),
       totalAmount: (order.items ?? []).reduce(
         (sum, item) => sum + Number(item.unitPrice) * item.quantity,
         0,
@@ -451,12 +497,6 @@ export class HealthyFoodService {
         totalPrice: Number(item.unitPrice) * item.quantity,
       })),
     };
-
-    try {
-      await this.eventEmitter.emitAsync(KITCHEN_ORDER_CREATED_EVENT, event);
-    } catch {
-      // La commande reste valide même si un listener optionnel échoue.
-    }
   }
 
   async findAllOrders(status?: KitchenOrderStatus): Promise<KitchenOrder[]> {

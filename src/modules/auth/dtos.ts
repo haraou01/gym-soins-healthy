@@ -13,6 +13,11 @@ export class LoginDto {
   @IsOptional()
   @IsString({ each: true })
   permissions?: string[];
+
+  /** Champ historique envoyé par le frontend, ignoré par le service de login. */
+  @IsOptional()
+  @IsIn(['SUPER_ADMIN', 'RECEPTIONIST', 'COACH', 'THERAPIST', 'CHEF'])
+  role?: Role;
 }
 
 export class RegisterDto {

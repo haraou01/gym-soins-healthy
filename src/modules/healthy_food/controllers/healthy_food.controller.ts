@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -136,8 +137,11 @@ export class HealthyFoodController {
 
   /** Créer une commande : contrôle et décrémentation des stocks d'ingrédients. */
   @Post('orders')
-  async createKitchenOrder(@Body() dto: CreateKitchenOrderDto) {
-    return this.healthyFoodService.createKitchenOrder(dto);
+  async createKitchenOrder(
+    @Body() dto: CreateKitchenOrderDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.healthyFoodService.createKitchenOrder(dto, idempotencyKey);
   }
 
   /** Mettre à jour le statut de préparation (transitions contrôlées). */

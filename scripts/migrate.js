@@ -53,6 +53,25 @@ async function main() {
       .filter((file) => file.endsWith('.sql'))
       .sort();
 
+    if (process.argv.includes('--baseline')) {
+      let marked = 0;
+
+      for (const file of files) {
+        const result = await client.query(
+          `INSERT INTO schema_migrations (name)
+           VALUES ($1)
+           ON CONFLICT (name) DO NOTHING`,
+          [file],
+        );
+        marked += result.rowCount ?? 0;
+      }
+
+      console.log(
+        `Baseline terminée : ${marked} migration(s) marquée(s) comme appliquée(s).`,
+      );
+      return;
+    }
+
     const appliedResult = await client.query(
       'SELECT name FROM schema_migrations',
     );

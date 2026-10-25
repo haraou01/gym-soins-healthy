@@ -80,6 +80,14 @@ Le runner :
 - enregistre chaque migration dans `schema_migrations` ;
 - exécute chaque fichier dans une transaction.
 
+Pour une base **déjà existante** créée avant l'introduction de `schema_migrations` :
+
+```bash
+npm run db:migrate:baseline
+```
+
+Cette commande marque les migrations présentes comme déjà appliquées sans les rejouer. À utiliser une seule fois, après vérification manuelle du schéma.
+
 ## Sauvegarde et restauration
 
 Sauvegarde logique :
@@ -154,6 +162,56 @@ cd client
 npm install
 npm run build
 ```
+
+## Durcissement production
+
+### Idempotence
+
+Les opérations critiques acceptent un header :
+
+```http
+Idempotency-Key: <valeur unique>
+```
+
+Endpoints concernés :
+
+- `POST /api/v1/shop/sales`
+- `POST /api/v1/shop/sales/process`
+- `POST /api/v1/care/sessions/consume`
+- `POST /api/v1/healthy-food/orders`
+
+La clé, l'opération métier et le résultat sont commités dans la même transaction PostgreSQL. Une même clé avec un payload différent retourne `409 Conflict`.
+
+### Outbox transactionnelle
+
+Les événements critiques (`sale.completed`, `kitchen.order.created`) sont écrits dans `outbox_events` dans la transaction métier. Un worker PostgreSQL traite les événements avec `FOR UPDATE SKIP LOCKED`, retries et backoff.
+
+Endpoints d'exploitation (SUPER_ADMIN) :
+
+- `GET /api/v1/outbox/stats`
+- `GET /api/v1/outbox/failed`
+- `POST /api/v1/outbox/:id/retry`
+
+Le worker est configurable via les variables `OUTBOX_*` et ne dépend pas de Redis.
+
+### Observabilité
+
+- Logs JSON structurés avec `requestId`.
+- En-tête `X-Request-Id` accepté et propagé.
+- Métriques Prometheus : `GET /api/v1/observability/metrics` (SUPER_ADMIN).
+- Métriques HTTP, erreurs, DB PostgreSQL, Outbox et worker.
+- Erreurs HTTP enrichies avec `requestId`.
+
+### Sécurité HTTP
+
+- Helmet (headers de sécurité).
+- CORS explicite via `CORS_ORIGINS`.
+- Limite de taille des requêtes via `REQUEST_BODY_LIMIT`.
+- Rate limiting global et renforcé sur login/register.
+- Verrouillage temporaire après échecs de connexion répétés.
+- Audit des connexions/inscriptions dans `security_audit_logs`.
+- Validation DTO stricte (`forbidNonWhitelisted`).
+- `JWT_SECRET` et `LICENSE_SECRET` obligatoires (>= 32 caractères) en production.
 
 ## Notes de sécurité
 

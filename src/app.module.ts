@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bull';
 
@@ -13,6 +15,9 @@ import {
 } from './config';
 import { LicenseModule } from './core/security/license.module';
 import { SecurityModule } from './core/security/security.module';
+import { IdempotencyModule } from './core/idempotency';
+import { OutboxModule } from './core/outbox';
+import { ObservabilityModule } from './core/observability';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { BookingModule } from './modules/booking/booking.module';
@@ -27,6 +32,13 @@ import { ShopModule } from './modules/shop/shop.module';
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
+
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60_000,
+        limit: 300,
+      },
+    ]),
 
     ConfigModule.forRoot({
       isGlobal: true,
@@ -72,6 +84,15 @@ import { ShopModule } from './modules/shop/shop.module';
     // Socle sécurité global (JWT, PermissionsGuard)
     SecurityModule,
 
+    // Idempotence transactionnelle PostgreSQL
+    IdempotencyModule,
+
+    // Outbox transactionnelle + worker durable
+    OutboxModule,
+
+    // Observabilité : logs structurés, métriques, corrélation
+    ObservabilityModule,
+
     // Métiers
     AuthModule,
     GymModule,
@@ -82,6 +103,12 @@ import { ShopModule } from './modules/shop/shop.module';
     ShopModule,
     LoyaltyModule,
     HealthyFoodModule,
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

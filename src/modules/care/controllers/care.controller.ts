@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Post,
   Param,
   NotFoundException,
@@ -63,8 +64,11 @@ export class CareController {
   /** --- Consommation d'une séance --- */
 
   @Post('sessions/consume')
-  async consumeSession(@Body() dto: ConsumeSessionDto) {
-    return this.careService.consumeSession(dto);
+  async consumeSession(
+    @Body() dto: ConsumeSessionDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.careService.consumeSession(dto, idempotencyKey);
   }
 
   @Get('sessions/client/:clientId')

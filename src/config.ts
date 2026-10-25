@@ -64,13 +64,40 @@ export const configSchema = Joi.object({
   REDIS_PORT: Joi.number().default(6379),
   REDIS_PASSWORD: Joi.string().allow('').optional(),
 
-  JWT_SECRET: Joi.string().optional(),
+  JWT_SECRET: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().min(32).required(),
+    otherwise: Joi.string().optional(),
+  }),
   JWT_EXPIRES_IN: Joi.string().optional(),
-  JWT_REFRESH_SECRET: Joi.string().optional(),
+  JWT_REFRESH_SECRET: Joi.string().allow('').optional(),
 
-  LICENSE_SECRET: Joi.string().optional(),
+  LICENSE_SECRET: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().min(32).required(),
+    otherwise: Joi.string().optional(),
+  }),
   LICENSE_DEFAULT_TTL_DAYS: Joi.number().optional(),
   LICENSE_DEV_MODE: Joi.boolean().allow('').optional(),
+
+  CORS_ORIGINS: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().required(),
+    otherwise: Joi.string().default(
+      'http://localhost:5173,tauri://localhost,http://tauri.localhost',
+    ),
+  }),
+  REQUEST_BODY_LIMIT: Joi.string().default('1mb'),
+  TRUST_PROXY: Joi.boolean().default(false),
+  OBSERVABILITY_LOG_ENABLED: Joi.boolean().default(true),
+
+  OUTBOX_WORKER_ENABLED: Joi.boolean().allow('').optional(),
+  OUTBOX_POLL_INTERVAL_MS: Joi.number().optional(),
+  OUTBOX_BATCH_SIZE: Joi.number().optional(),
+  OUTBOX_MAX_ATTEMPTS: Joi.number().optional(),
+  OUTBOX_BASE_BACKOFF_MS: Joi.number().optional(),
+  OUTBOX_MAX_BACKOFF_MS: Joi.number().optional(),
+  OUTBOX_LOCK_TIMEOUT_MS: Joi.number().optional(),
 }).unknown(true);
 
 export default { postgresqlFactory, redisFactory, jwtFactory, licenseFactory, configSchema };

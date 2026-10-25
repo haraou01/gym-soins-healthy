@@ -1,11 +1,15 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { DataSource } from 'typeorm';
 
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
+import { OutboxService } from '../src/core/outbox';
 import {
   getTestDatabaseSettings,
   resetTestDatabase,
@@ -73,6 +77,11 @@ describe('GymSoinsHealthy — validation E2E', () => {
     process.env.JWT_SECRET = TEST_JWT_SECRET;
     process.env.JWT_EXPIRES_IN = '1h';
     process.env.LICENSE_SECRET = TEST_LICENSE_SECRET;
+    process.env.OUTBOX_WORKER_ENABLED = 'false';
+    process.env.OUTBOX_MAX_ATTEMPTS = '2';
+    process.env.OUTBOX_BASE_BACKOFF_MS = '1';
+    process.env.TRUST_PROXY = 'true';
+    process.env.OBSERVABILITY_LOG_ENABLED = 'false';
     delete process.env.LICENSE_KEY;
     delete process.env.LICENSE_HARDWARE_ID;
 
@@ -84,14 +93,10 @@ describe('GymSoinsHealthy — validation E2E', () => {
     }).compile();
 
     app = moduleRef.createNestApplication({ logger: false });
-    // Même configuration que `src/main.ts`.
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: false,
-        transform: true,
-      }),
-    );
+    // Même configuration HTTP/sécurité que `src/main.ts`.
+    configureApp(app);
+    // Les tests de rate limiting utilisent X-Forwarded-For pour isoler les IP.
+    app.getHttpAdapter().getInstance().set('trust proxy', true);
     await app.init();
 
     http = request(app.getHttpServer());
@@ -422,6 +427,492 @@ describe('GymSoinsHealthy — validation E2E', () => {
   });
 
   // -------------------------------------------------------------------------
+  // 3bis. Idempotence transactionnelle
+  // -------------------------------------------------------------------------
+  describe('3bis. Idempotence transactionnelle', () => {
+    const suffix = Date.now();
+
+    const createProduct = async (label: string, stockQuantity: number) => {
+      const response = await http
+        .post('/api/v1/shop')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          name: `Produit idempotence ${label}`,
+          sku: `E2E-IDEM-${label}-${suffix}`,
+          price: 10,
+          stockQuantity,
+          category: 'BOISSON',
+          isActive: true,
+        })
+        .expect(201);
+
+      return response.body;
+    };
+
+    it('Shop — même clé, même payload : même vente et stock décrémenté une fois', async () => {
+      const product = await createProduct('SHOP', 3);
+      const key = `e2e-idem-shop-${suffix}`;
+      const payload = {
+        items: [{ productId: product.id, quantity: 1 }],
+        paymentMethod: 'ESPECES',
+      };
+
+      const first = await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      const replay = await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      expect(replay.body.saleId).toBe(first.body.saleId);
+      expect(replay.body.totalAmount).toBe(first.body.totalAmount);
+
+      const productAfter = await http
+        .get(`/api/v1/shop/${product.id}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(productAfter.body.stockQuantity).toBe(2);
+
+      await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          items: [{ productId: product.id, quantity: 2 }],
+          paymentMethod: 'ESPECES',
+        })
+        .expect(409);
+    });
+
+    it('Shop — deux requêtes simultanées avec la même clé ne créent qu’une vente', async () => {
+      const product = await createProduct('CONCURRENT', 2);
+      const key = `e2e-idem-concurrent-${suffix}`;
+      const payload = {
+        items: [{ productId: product.id, quantity: 1 }],
+        paymentMethod: 'ESPECES',
+      };
+
+      const [first, second] = await Promise.all([
+        http
+          .post('/api/v1/shop/sales/process')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .set('Idempotency-Key', key)
+          .send(payload),
+        http
+          .post('/api/v1/shop/sales/process')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .set('Idempotency-Key', key)
+          .send(payload),
+      ]);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(first.body.saleId).toBe(second.body.saleId);
+
+      const productAfter = await http
+        .get(`/api/v1/shop/${product.id}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(productAfter.body.stockQuantity).toBe(1);
+    });
+
+    it('Shop — une transaction en échec ne persiste pas la clé et autorise le retry', async () => {
+      const dataSource = app.get(DataSource);
+      const product = await createProduct('ROLLBACK', 1);
+      const key = `e2e-idem-rollback-${suffix}`;
+
+      const outboxBefore = await dataSource.query(
+        'SELECT COUNT(*)::int AS count FROM outbox_events',
+      );
+
+      await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          items: [{ productId: product.id, quantity: 2 }],
+          paymentMethod: 'ESPECES',
+        })
+        .expect(400);
+
+      const outboxAfterFailure = await dataSource.query(
+        'SELECT COUNT(*)::int AS count FROM outbox_events',
+      );
+      expect(outboxAfterFailure[0].count).toBe(outboxBefore[0].count);
+
+      const retry = await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send({
+          items: [{ productId: product.id, quantity: 1 }],
+          paymentMethod: 'ESPECES',
+        })
+        .expect(201);
+
+      expect(retry.body.saleId).toBeTruthy();
+
+      const outboxAfterSuccess = await dataSource.query(
+        'SELECT COUNT(*)::int AS count FROM outbox_events',
+      );
+      expect(outboxAfterSuccess[0].count).toBe(outboxBefore[0].count + 1);
+    });
+
+    it('Care — même clé, même consommation : une seule séance décrémentée', async () => {
+      const clientId = `e2e-idem-care-${suffix}`;
+      const careService = await http
+        .post('/api/v1/care/services')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          title: `Pack idempotence ${suffix}`,
+          durationMinutes: 60,
+          price: 50,
+          type: 'PACK',
+        })
+        .expect(201);
+
+      await http
+        .post('/api/v1/care/packages/assign')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          clientId,
+          careServiceId: careService.body.id,
+          totalSessions: 2,
+        })
+        .expect(201);
+
+      const key = `e2e-idem-care-${suffix}`;
+      const payload = {
+        clientId,
+        careServiceId: careService.body.id,
+        therapistId: `therapist-${suffix}`,
+      };
+
+      const first = await http
+        .post('/api/v1/care/sessions/consume')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      const replay = await http
+        .post('/api/v1/care/sessions/consume')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      expect(replay.body.session.id).toBe(first.body.session.id);
+
+      const packages = await http
+        .get(`/api/v1/care/packages/client/${clientId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(packages.body[0].remainingSessions).toBe(1);
+    });
+
+    it('Healthy Food — même clé, même commande : un seul décrément de stock', async () => {
+      const ingredient = await http
+        .post('/api/v1/healthy-food/ingredients')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          name: `Ingrédient idempotence ${suffix}`,
+          unit: 'UNITE',
+          stockQuantity: 10,
+          alertThreshold: 1,
+        })
+        .expect(201);
+
+      const dish = await http
+        .post('/api/v1/healthy-food/dishes')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          name: `Plat idempotence ${suffix}`,
+          price: 12,
+          category: 'PLAT',
+          isAvailable: true,
+          type: 'SUR_COMMANDE',
+        })
+        .expect(201);
+
+      await http
+        .post(`/api/v1/healthy-food/dishes/${dish.body.id}/ingredients`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          ingredientId: ingredient.body.id,
+          quantityNeeded: 1,
+        })
+        .expect(201);
+
+      const key = `e2e-idem-food-${suffix}`;
+      const payload = {
+        clientId: `e2e-idem-food-${suffix}`,
+        type: 'SUR_PLACE',
+        items: [{ dishId: dish.body.id, quantity: 1 }],
+      };
+
+      const first = await http
+        .post('/api/v1/healthy-food/orders')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      const replay = await http
+        .post('/api/v1/healthy-food/orders')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      expect(replay.body.id).toBe(first.body.id);
+
+      const ingredientAfter = await http
+        .get(`/api/v1/healthy-food/ingredients/${ingredient.body.id}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(Number(ingredientAfter.body.stockQuantity)).toBe(9);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 3ter. Outbox transactionnelle et worker
+  // -------------------------------------------------------------------------
+  describe('3ter. Outbox transactionnelle et worker', () => {
+    const suffix = Date.now();
+
+    it('Shop — la vente et sale.completed sont persistés ensemble puis traités', async () => {
+      const dataSource = app.get(DataSource);
+      const outbox = app.get(OutboxService);
+      const clientId = `e2e-outbox-client-${suffix}`;
+
+      const product = await http
+        .post('/api/v1/shop')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          name: `Produit outbox ${suffix}`,
+          sku: `E2E-OUTBOX-${suffix}`,
+          price: 12.5,
+          stockQuantity: 2,
+          category: 'BOISSON',
+          isActive: true,
+        })
+        .expect(201);
+
+      const key = `e2e-outbox-sale-${suffix}`;
+      const payload = {
+        clientId,
+        items: [{ productId: product.body.id, quantity: 1 }],
+        paymentMethod: 'CARTE',
+      };
+
+      const sale = await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      // Le dispatch immédiat attend le listener : la fidélité est disponible.
+      const balance = await http
+        .get(`/api/v1/loyalty/balance/${clientId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(balance.body.pointsBalance).toBe(12);
+
+      const events = await dataSource.query(
+        `SELECT id, "eventType", "aggregateType", "aggregateId", status, attempts
+         FROM outbox_events WHERE "aggregateId" = $1`,
+        [sale.body.saleId],
+      );
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        eventType: 'sale.completed',
+        aggregateType: 'sale',
+        aggregateId: sale.body.saleId,
+        status: 'PROCESSED',
+        attempts: 1,
+      });
+
+      // Replay idempotent : aucun second événement outbox.
+      await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Idempotency-Key', key)
+        .send(payload)
+        .expect(201);
+
+      const eventsAfterReplay = await dataSource.query(
+        'SELECT COUNT(*)::int AS count FROM outbox_events WHERE "aggregateId" = $1',
+        [sale.body.saleId],
+      );
+
+      expect(eventsAfterReplay[0].count).toBe(1);
+
+      // Redelivery volontaire : l'idempotence du listener Loyalty évite
+      // un second crédit de points.
+      await dataSource.query(
+        `UPDATE outbox_events
+         SET status = 'PENDING', "processedAt" = NULL, attempts = 0, "availableAt" = NOW()
+         WHERE id = $1`,
+        [events[0].id],
+      );
+
+      await outbox.processBatch();
+
+      const balanceAfterRedelivery = await http
+        .get(`/api/v1/loyalty/balance/${clientId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(balanceAfterRedelivery.body.pointsBalance).toBe(12);
+
+      const eventAfterRedelivery = await outbox.findById(events[0].id);
+      expect(eventAfterRedelivery?.status).toBe('PROCESSED');
+    });
+
+    it('Worker — retry, FAILED, reprise et succès sans listener', async () => {
+      const dataSource = app.get(DataSource);
+      const outbox = app.get(OutboxService);
+      const emitter = app.get(EventEmitter2);
+
+      const failingListener = () => {
+        throw new Error('listener failure simulated');
+      };
+      emitter.on('test.outbox.retry', failingListener);
+
+      let eventId: string;
+
+      await dataSource.transaction(async (manager) => {
+        eventId = await outbox.append(manager, {
+          eventType: 'test.outbox.retry',
+          aggregateType: 'test',
+          aggregateId: `test-outbox-${suffix}`,
+          payload: { hello: 'world' },
+        });
+      });
+
+      await outbox.processBatch();
+
+      let event = await outbox.findById(eventId);
+      expect(event?.status).toBe('PENDING');
+      expect(event?.attempts).toBe(1);
+      expect(event?.lastError).toContain('listener failure simulated');
+
+      await dataSource.query(
+        'UPDATE outbox_events SET "availableAt" = NOW() WHERE id = $1',
+        [eventId],
+      );
+      await outbox.processBatch();
+
+      event = await outbox.findById(eventId);
+      expect(event?.status).toBe('FAILED');
+      expect(event?.attempts).toBe(2);
+
+      const stats = await http
+        .get('/api/v1/outbox/stats')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(stats.body.FAILED).toBeGreaterThanOrEqual(1);
+
+      const retried = await http
+        .post(`/api/v1/outbox/${eventId}/retry`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(201);
+
+      expect(retried.body.status).toBe('PENDING');
+      expect(retried.body.attempts).toBe(0);
+
+      emitter.off('test.outbox.retry', failingListener);
+
+      await dataSource.query(
+        'UPDATE outbox_events SET "availableAt" = NOW() WHERE id = $1',
+        [eventId],
+      );
+      await outbox.processBatch();
+
+      event = await outbox.findById(eventId);
+      expect(event?.status).toBe('PROCESSED');
+      expect(event?.processedAt).toBeTruthy();
+      expect(event?.lastError).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 3quater. Booking — contraintes PostgreSQL
+  // -------------------------------------------------------------------------
+  describe('3quater. Booking — contraintes PostgreSQL', () => {
+    const suffix = Date.now();
+
+    it('deux réservations concurrentes sur le même créneau → 1 succès / 1 conflit', async () => {
+      const resourceId = randomUUID();
+      const practitioner = `e2e-booking-pract-${suffix}`;
+      const start = new Date(Date.now() + 60 * 60 * 1000);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+      const create = (clientId: string) =>
+        http
+          .post('/api/v1/bookings')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .send({
+            clientId,
+            resourceType: 'EQUIPMENT',
+            resourceId,
+            practitionerOrCoachId: practitioner,
+            startTime: start.toISOString(),
+            endTime: end.toISOString(),
+          });
+
+      const [first, second] = await Promise.all([
+        create(`e2e-booking-a-${suffix}`),
+        create(`e2e-booking-b-${suffix}`),
+      ]);
+
+      expect([first.status, second.status].sort()).toEqual([201, 409]);
+    });
+
+    it('la contrainte d’exclusion PostgreSQL refuse un chevauchement direct', async () => {
+      const dataSource = app.get(DataSource);
+      const resourceId = randomUUID();
+      const practitioner = `e2e-booking-db-pract-${suffix}`;
+      const start = new Date(Date.now() + 2 * 60 * 60 * 1000);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+
+      await dataSource.query(
+        `INSERT INTO bookings
+          ("clientId", "resourceType", "resourceId", "practitionerOrCoachId", "startTime", "endTime")
+         VALUES ($1, 'EQUIPMENT', $2, $3, $4, $5)`,
+        [`e2e-booking-db-a-${suffix}`, resourceId, practitioner, start, end],
+      );
+
+      await expect(
+        dataSource.query(
+          `INSERT INTO bookings
+            ("clientId", "resourceType", "resourceId", "practitionerOrCoachId", "startTime", "endTime")
+           VALUES ($1, 'EQUIPMENT', $2, $3, $4, $5)`,
+          [`e2e-booking-db-b-${suffix}`, resourceId, practitioner, start, end],
+        ),
+      ).rejects.toMatchObject({
+        driverError: { code: '23P01' },
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // 4. Configuration & Whitelabel
   // -------------------------------------------------------------------------
   describe('4. Configuration & Whitelabel', () => {
@@ -551,6 +1042,316 @@ describe('GymSoinsHealthy — validation E2E', () => {
         .set('Authorization', `Bearer ${accessToken}`)
         .send({ taxRates: [{ label: 'TVA', rate: 120 }] })
         .expect(400);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 5. Observabilité
+  // -------------------------------------------------------------------------
+  describe('5. Observabilité', () => {
+    it('protège l’endpoint de métriques', async () => {
+      await http.get('/api/v1/observability/metrics').expect(401);
+    });
+
+    it('expose les métriques HTTP, DB et Outbox avec corrélation', async () => {
+      const metrics = await http
+        .get('/api/v1/observability/metrics')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('x-request-id', 'e2e-correlation-metrics')
+        .expect(200);
+
+      expect(metrics.headers['x-request-id']).toBe('e2e-correlation-metrics');
+      expect(metrics.text).toContain('http_requests_total');
+      expect(metrics.text).toContain('http_request_duration_ms_bucket');
+      expect(metrics.text).toContain('db_transactions_total');
+      expect(metrics.text).toContain('outbox_events{status=');
+    });
+
+    it('ajoute le requestId aux erreurs HTTP', async () => {
+      const response = await http
+        .get('/api/v1/gym/subscriptions')
+        .set('x-request-id', 'e2e-correlation-error')
+        .expect(401);
+
+      expect(response.body.requestId).toBe('e2e-correlation-error');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 5ter. Résilience
+  // -------------------------------------------------------------------------
+  describe('5ter. Résilience', () => {
+    const suffix = Date.now();
+
+    it('Care — deux consommations simultanées ne débitent qu’un crédit', async () => {
+      const clientId = `e2e-resilience-care-${suffix}`;
+      const careService = await http
+        .post('/api/v1/care/services')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          title: `Pack résilience ${suffix}`,
+          durationMinutes: 45,
+          price: 40,
+          type: 'PACK',
+        })
+        .expect(201);
+
+      await http
+        .post('/api/v1/care/packages/assign')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          clientId,
+          careServiceId: careService.body.id,
+          totalSessions: 1,
+        })
+        .expect(201);
+
+      const payload = {
+        clientId,
+        careServiceId: careService.body.id,
+        therapistId: `therapist-resilience-${suffix}`,
+      };
+
+      const [first, second] = await Promise.all([
+        http
+          .post('/api/v1/care/sessions/consume')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .send(payload),
+        http
+          .post('/api/v1/care/sessions/consume')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .send(payload),
+      ]);
+
+      expect([first.status, second.status].sort()).toEqual([201, 404]);
+
+      const packages = await http
+        .get(`/api/v1/care/packages/client/${clientId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(packages.body[0].remainingSessions).toBe(0);
+
+      const sessions = await http
+        .get(`/api/v1/care/sessions/client/${clientId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(sessions.body).toHaveLength(1);
+    });
+
+    it('Healthy Food — deux commandes concurrentes avec la même clé ne débitent qu’une fois', async () => {
+      const ingredient = await http
+        .post('/api/v1/healthy-food/ingredients')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          name: `Ingrédient résilience ${suffix}`,
+          unit: 'UNITE',
+          stockQuantity: 1,
+          alertThreshold: 0,
+        })
+        .expect(201);
+
+      const dish = await http
+        .post('/api/v1/healthy-food/dishes')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          name: `Plat résilience ${suffix}`,
+          price: 11,
+          category: 'PLAT',
+          isAvailable: true,
+          type: 'SUR_COMMANDE',
+        })
+        .expect(201);
+
+      await http
+        .post(`/api/v1/healthy-food/dishes/${dish.body.id}/ingredients`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({
+          ingredientId: ingredient.body.id,
+          quantityNeeded: 1,
+        })
+        .expect(201);
+
+      const key = `e2e-resilience-food-${suffix}`;
+      const clientId = `e2e-resilience-food-client-${suffix}`;
+      const payload = {
+        clientId,
+        type: 'SUR_PLACE',
+        items: [{ dishId: dish.body.id, quantity: 1 }],
+      };
+
+      const [first, second] = await Promise.all([
+        http
+          .post('/api/v1/healthy-food/orders')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .set('Idempotency-Key', key)
+          .send(payload),
+        http
+          .post('/api/v1/healthy-food/orders')
+          .set('Authorization', `Bearer ${accessToken}`)
+          .set('Idempotency-Key', key)
+          .send(payload),
+      ]);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect(first.body.id).toBe(second.body.id);
+
+      const ingredientAfter = await http
+        .get(`/api/v1/healthy-food/ingredients/${ingredient.body.id}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(Number(ingredientAfter.body.stockQuantity)).toBe(0);
+
+      const orders = await http
+        .get(`/api/v1/healthy-food/orders/client/${clientId}`)
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(orders.body).toHaveLength(1);
+    });
+
+    it('Worker — récupère un événement PROCESSING orphelin', async () => {
+      const dataSource = app.get(DataSource);
+      const outbox = app.get(OutboxService);
+
+      const staleDate = new Date(Date.now() - 10 * 60 * 1000);
+      const inserted = await dataSource.query(
+        `INSERT INTO outbox_events
+          ("eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "createdAt", "updatedAt")
+         VALUES ('test.outbox.stale', 'test', $1, '{}'::jsonb, 'PROCESSING', 1, NOW(), NOW(), $2)
+         RETURNING id`,
+        [`stale-${suffix}`, staleDate],
+      );
+
+      const eventId = inserted[0].id;
+      await outbox.processBatch();
+
+      const event = await outbox.findById(eventId);
+      expect(event?.status).toBe('PROCESSED');
+      expect(event?.processedAt).toBeTruthy();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 6. Sécurité production
+  // -------------------------------------------------------------------------
+  describe('6. Sécurité production', () => {
+    const suffix = Date.now();
+
+    it('expose les headers de sécurité et une CORS explicite', async () => {
+      const allowed = await http
+        .get('/api/v1/gym/subscriptions')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Origin', 'http://localhost:5173')
+        .expect(200);
+
+      expect(allowed.headers['access-control-allow-origin']).toBe(
+        'http://localhost:5173',
+      );
+      expect(allowed.headers['x-content-type-options']).toBe('nosniff');
+      expect(allowed.headers['x-frame-options']).toBeDefined();
+
+      const denied = await http
+        .get('/api/v1/gym/subscriptions')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .set('Origin', 'http://evil.example')
+        .expect(200);
+
+      expect(denied.headers['access-control-allow-origin']).toBeUndefined();
+    });
+
+    it('rejette les champs DTO non whitelistés', async () => {
+      await http
+        .post('/api/v1/auth/login')
+        .send({
+          email: TEST_ADMIN_EMAIL,
+          password: TEST_ADMIN_PASSWORD,
+          hacked: true,
+        })
+        .expect(400);
+    });
+
+    it('rejette un JWT expiré', async () => {
+      const jwtService = app.get(JwtService, { strict: false });
+      const expired = jwtService.sign(
+        {
+          sub: 'e2e-expired',
+          email: TEST_ADMIN_EMAIL,
+          role: 'SUPER_ADMIN',
+        },
+        { expiresIn: '-1s' },
+      );
+
+      await http
+        .get('/api/v1/gym/subscriptions')
+        .set('Authorization', `Bearer ${expired}`)
+        .expect(401);
+    });
+
+    it('limite la taille des requêtes', async () => {
+      await http
+        .post('/api/v1/auth/login')
+        .send({
+          email: TEST_ADMIN_EMAIL,
+          password: 'a'.repeat(1_100_000),
+        })
+        .expect(413);
+    });
+
+    it('journalise les tentatives de connexion', async () => {
+      const dataSource = app.get(DataSource);
+
+      const audits = await dataSource.query(
+        `SELECT action, success FROM security_audit_logs
+         WHERE email = $1 AND action = 'LOGIN'`,
+        [TEST_ADMIN_EMAIL],
+      );
+
+      expect(audits.some((row: { success: boolean }) => row.success)).toBe(true);
+      expect(audits.some((row: { success: boolean }) => !row.success)).toBe(true);
+    });
+
+    it('applique un rate limiting sur le login', async () => {
+      const statuses: number[] = [];
+
+      for (let index = 0; index < 6; index += 1) {
+        const response = await http
+          .post('/api/v1/auth/login')
+          .set('X-Forwarded-For', '203.0.113.77')
+          .send({
+            email: `rate-limit-${suffix}@example.com`,
+            password: 'mot-de-passe-invalide',
+          });
+
+        statuses.push(response.status);
+      }
+
+      expect(statuses).toEqual([401, 401, 401, 401, 401, 429]);
+    });
+
+    it('verrouille un compte après plusieurs échecs successifs', async () => {
+      for (let index = 1; index <= 10; index += 1) {
+        await http
+          .post('/api/v1/auth/login')
+          .set('X-Forwarded-For', `198.51.100.${index}`)
+          .send({
+            email: TEST_ADMIN_EMAIL,
+            password: 'mot-de-passe-invalide',
+          })
+          .expect(401);
+      }
+
+      await http
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', '198.51.100.11')
+        .send({
+          email: TEST_ADMIN_EMAIL,
+          password: TEST_ADMIN_PASSWORD,
+        })
+        .expect(429);
     });
   });
 });

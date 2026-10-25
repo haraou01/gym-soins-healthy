@@ -14,6 +14,10 @@ import {
   ClientCarePackage,
   ClientCarePackageStatus,
 } from '../entities/client-care-package.entity';
+import {
+  IdempotencyService,
+  IDEMPOTENCY_SCOPES,
+} from '../../../core/idempotency';
 import { CareSession } from '../entities/care-session.entity';
 import type { AssignPackageDto, ConsumeSessionDto } from '../dto/care.dto';
 
@@ -34,6 +38,7 @@ export class CareService {
     private readonly careSessionRepository: Repository<CareSession>,
     @InjectDataSource()
     private readonly dataSource: DataSource,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /** --- Catalogue des soins --- */
@@ -162,9 +167,18 @@ export class CareService {
    * - le solde ne peut jamais devenir négatif ;
    * - si la création de la séance échoue, le décrément est annulé.
    */
-  async consumeSession(dto: ConsumeSessionDto): Promise<CareSessionResult> {
-    return this.dataSource.transaction(async (manager) => {
-      const careServiceRepository = manager.getRepository(CareServiceEntity);
+  async consumeSession(
+    dto: ConsumeSessionDto,
+    idempotencyKey?: string,
+  ): Promise<CareSessionResult> {
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      return this.idempotencyService.execute(
+        manager,
+        IDEMPOTENCY_SCOPES.CARE_CONSUME,
+        idempotencyKey,
+        this.buildConsumeIdempotencyPayload(dto),
+        async () => {
+          const careServiceRepository = manager.getRepository(CareServiceEntity);
       const packageRepository = manager.getRepository(ClientCarePackage);
       const sessionRepository = manager.getRepository(CareSession);
 
@@ -225,7 +239,24 @@ export class CareService {
         remainingSessions: carePackage.remainingSessions,
         packageId: carePackage.id,
       };
+        },
+      );
     });
+
+    return outcome.value;
+  }
+
+  private buildConsumeIdempotencyPayload(dto: ConsumeSessionDto): unknown {
+    return {
+      clientId: dto.clientId,
+      careServiceId: dto.careServiceId,
+      therapistId: dto.therapistId,
+      timestamp:
+        dto.timestamp instanceof Date
+          ? dto.timestamp.toISOString()
+          : dto.timestamp ?? null,
+      notes: dto.notes?.trim() || null,
+    };
   }
 
   async findSessionsByClient(clientId: string): Promise<CareSession[]> {

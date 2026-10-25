@@ -26,4 +26,6 @@ export interface SaleCompletedEvent {
   status: string;
   createdAt: string;
   items: SaleCompletedItem[];
+  /** Identifiant de l'événement Outbox, ajouté au moment du dispatch. */
+  outboxEventId?: string;
 }

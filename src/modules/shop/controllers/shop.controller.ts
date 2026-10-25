@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -66,14 +67,20 @@ export class ShopController {
 
   /** Valider une vente : contrôle du stock + décrémentation transactionnelle. */
   @Post('sales')
-  async createSale(@Body() dto: CreateSaleDto) {
-    return this.shopService.createSale(dto);
+  async createSale(
+    @Body() dto: CreateSaleDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.shopService.createSale(dto, idempotencyKey);
   }
 
   /** Valider une vente POS et retourner un ticket/reçu structuré. */
   @Post('sales/process')
-  async processSale(@Body() dto: ProcessSaleDto) {
-    return this.shopService.processSale(dto);
+  async processSale(
+    @Body() dto: ProcessSaleDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.shopService.processSale(dto, idempotencyKey);
   }
 
   /** --- Produit unitaire --- */

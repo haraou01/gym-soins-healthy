@@ -4,7 +4,6 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, QueryFailedError, Repository } from 'typeorm';
 
@@ -14,6 +13,11 @@ import {
   SALE_COMPLETED_EVENT,
   type SaleCompletedEvent,
 } from '../../../core/events';
+import {
+  IdempotencyService,
+  IDEMPOTENCY_SCOPES,
+} from '../../../core/idempotency';
+import { OutboxService } from '../../../core/outbox';
 
 /** Seuil par défaut des alertes de stock bas. */
 export const DEFAULT_LOW_STOCK_THRESHOLD = 5;
@@ -54,7 +58,8 @@ export class ShopService {
     @InjectRepository(SaleItem)
     private readonly saleItemRepository: Repository<SaleItem>,
     private readonly dataSource: DataSource,
-    private readonly eventEmitter: EventEmitter2,
+    private readonly idempotencyService: IdempotencyService,
+    private readonly outboxService: OutboxService,
   ) {}
 
   /** --- Catalogue produits (CRUD) --- */
@@ -192,7 +197,10 @@ export class ShopService {
    * - calcul du total en centimes (pas d'erreur d'arrondi flottant) ;
    * - création de la vente + items + décrémentation des stocks dans une seule transaction.
    */
-  async createSale(dto: CreateSaleDto): Promise<Sale> {
+  async createSale(
+    dto: CreateSaleDto,
+    idempotencyKey?: string,
+  ): Promise<Sale> {
     const items = dto.items ?? [];
 
     if (items.length === 0) {
@@ -203,9 +211,15 @@ export class ShopService {
 
     this.assertNoDuplicateProducts(items);
 
-    const sale = await this.dataSource.transaction(async (manager) => {
-      const productRepository = manager.getRepository(Product);
-      const productIds = [...new Set(items.map((item) => item.productId))];
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      return this.idempotencyService.execute(
+        manager,
+        IDEMPOTENCY_SCOPES.SHOP_SALE,
+        idempotencyKey,
+        this.buildSaleIdempotencyPayload(dto),
+        async () => {
+          const productRepository = manager.getRepository(Product);
+          const productIds = [...new Set(items.map((item) => item.productId))];
 
       const products = await productRepository
         .createQueryBuilder('product')
@@ -288,36 +302,63 @@ export class ShopService {
         await productRepository.save(physicalProducts);
       }
 
-      const sale = await saleRepository.findOne({
-        where: { id: savedSale.id },
-        relations: { items: { product: true } },
+      const persistedSale =
+        (await saleRepository.findOne({
+          where: { id: savedSale.id },
+          relations: { items: { product: true } },
+        })) ?? savedSale;
+
+      const outboxEventId = await this.outboxService.append(manager, {
+        eventType: SALE_COMPLETED_EVENT,
+        aggregateType: 'sale',
+        aggregateId: persistedSale.id,
+        payload: this.buildSaleCompletedEvent(persistedSale),
       });
 
-      return sale ?? savedSale;
+      return { sale: persistedSale, outboxEventId };
+        },
+      );
     });
 
-    // Événement émis APRÈS le commit : le module Loyalty (ou tout autre
-    // consommateur optionnel) peut être absent sans impacter la vente.
-    await this.emitSaleCompleted(sale);
+    if (!outcome.replayed) {
+      // Dispatch immédiat après commit ; le worker reprendra en cas d'échec.
+      await this.outboxService
+        .dispatchOne(outcome.value.outboxEventId)
+        .catch(() => undefined);
+    }
 
-    return sale;
+    return outcome.value.sale;
+  }
+
+  private buildSaleIdempotencyPayload(dto: CreateSaleDto): unknown {
+    return {
+      clientId: dto.clientId?.trim() || null,
+      paymentMethod: dto.paymentMethod,
+      items: [...dto.items]
+        .sort((a, b) => a.productId.localeCompare(b.productId))
+        .map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+    };
   }
 
   /**
-   * Émet `sale.completed` via le bus d'événements.
-   *
-   * Les erreurs des listeners optionnels sont absorbées : un module absent ou
-   * défaillant ne doit jamais faire échouer la vente.
+   * Construit le payload métier de `sale.completed`.
+   * L'événement est persisté dans l'outbox de la même transaction que la vente.
    */
-  private async emitSaleCompleted(sale: Sale): Promise<void> {
-    const event: SaleCompletedEvent = {
+  private buildSaleCompletedEvent(sale: Sale): SaleCompletedEvent {
+    return {
       saleId: sale.id,
       clientId: sale.clientId,
       totalAmount: Number(sale.totalAmount),
       totalCents: Math.round(Number(sale.totalAmount) * 100),
       paymentMethod: sale.paymentMethod,
       status: sale.status ?? SaleStatus.COMPLETED,
-      createdAt: sale.createdAt.toISOString(),
+      createdAt:
+        sale.createdAt instanceof Date
+          ? sale.createdAt.toISOString()
+          : String(sale.createdAt),
       items: (sale.items ?? []).map((item) => ({
         productId: item.productId,
         sku: item.product?.sku ?? '',
@@ -327,12 +368,6 @@ export class ShopService {
         totalPrice: Number(item.totalPrice ?? 0),
       })),
     };
-
-    try {
-      await this.eventEmitter.emitAsync(SALE_COMPLETED_EVENT, event);
-    } catch {
-      // Le listener optionnel journalise déjà ses propres erreurs.
-    }
   }
 
   /**
@@ -343,12 +378,18 @@ export class ShopService {
    * - le contrôle strict du stock ;
    * - la transaction vente + lignes, puis l'événement optionnel `sale.completed`.
    */
-  async processSale(dto: ProcessSaleDto): Promise<SaleReceipt> {
-    const sale = await this.createSale({
-      clientId: dto.clientId,
-      items: dto.items,
-      paymentMethod: dto.paymentMethod ?? PaymentMethod.ESPECES,
-    });
+  async processSale(
+    dto: ProcessSaleDto,
+    idempotencyKey?: string,
+  ): Promise<SaleReceipt> {
+    const sale = await this.createSale(
+      {
+        clientId: dto.clientId,
+        items: dto.items,
+        paymentMethod: dto.paymentMethod ?? PaymentMethod.ESPECES,
+      },
+      idempotencyKey,
+    );
 
     return this.buildReceipt(sale);
   }

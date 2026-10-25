@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm';
 
 import { Booking, BookingResourceType, BookingStatus } from '../entities/booking.entity';
 import type { CreateBookingDto } from '../dto/booking.dto';
@@ -38,7 +38,8 @@ export class BookingService {
       );
     }
 
-    return this.dataSource.transaction(async (manager) => {
+    try {
+      return await this.dataSource.transaction(async (manager) => {
       // 1. Sérialiser les créations concurrentes pour la ressource et le praticien.
       //    Les verrous sont pris dans un ordre déterministe pour éviter les deadlocks.
       await this.acquireBookingLocks(manager, dto);
@@ -84,7 +85,14 @@ export class BookingService {
       });
 
       return repository.save(booking);
-    });
+      });
+    } catch (error) {
+      if (this.isExclusionViolation(error)) {
+        throw new ConflictException('Ce créneau est déjà réservé.');
+      }
+
+      throw error;
+    }
   }
 
   /**
@@ -158,6 +166,17 @@ export class BookingService {
       .getOne();
 
     return this.toConflictCheck(conflict);
+  }
+
+  private isExclusionViolation(error: unknown): boolean {
+    if (!(error instanceof QueryFailedError)) {
+      return false;
+    }
+
+    return (
+      (error as QueryFailedError & { driverError?: { code?: string } })
+        .driverError?.code === '23P01'
+    );
   }
 
   private toConflictCheck(conflict: Booking | null): ConflictCheck {
