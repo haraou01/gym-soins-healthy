@@ -25,10 +25,13 @@ export class Equipment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Column({ type: 'varchar', length: 200 })
   name: string;
 
-  @Column({ type: 'varchar', length: 100, unique: true })
+  @Column({ type: 'varchar', length: 100 })
   serialNumber: string;
 
   @Column({ type: 'enum', enum: EquipmentCategory })

@@ -10,13 +10,18 @@ import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { OutboxService } from '../src/core/outbox';
+import { runWithTenantContext } from '../src/core/tenant';
 import { AuthAuditService } from '../src/modules/auth/auth-audit.service';
+import { BookingService } from '../src/modules/booking/services/booking.service';
+import { KdsEventsService } from '../src/modules/healthy_food/services/kds-events.service';
 import { KdsStreamTicketService } from '../src/modules/healthy_food/services/kds-stream-ticket.service';
 import {
   getTestDatabaseSettings,
   resetTestDatabase,
   TEST_ADMIN_EMAIL,
   TEST_ADMIN_PASSWORD,
+  TEST_RECEPTIONIST_EMAIL,
+  TEST_TENANT_ID,
   TEST_JWT_SECRET,
   TEST_LICENSE_SECRET,
   waitForDatabase,
@@ -105,6 +110,34 @@ describe('GymSoinsHealthy — validation E2E', () => {
     http = request(app.getHttpServer());
   }, 180_000);
 
+  const signMembershipToken = async (
+    email: string,
+    role: string,
+  ): Promise<string> => {
+    const dataSource = app.get(DataSource);
+    const rows = await dataSource.query(
+      `SELECT u.id, tm.id AS "membershipId", tm."tenantId"
+       FROM users u
+       JOIN tenant_memberships tm ON tm."userId" = u.id
+       WHERE u.email = $1 AND tm.status = 'ACTIVE'
+       LIMIT 1`,
+      [email],
+    );
+
+    if (rows.length === 0) {
+      throw new Error(`Membreship introuvable pour ${email}`);
+    }
+
+    const jwtService = app.get(JwtService, { strict: false });
+    return jwtService.sign({
+      sub: rows[0].id,
+      email,
+      role,
+      tenantId: rows[0].tenantId,
+      membershipId: rows[0].membershipId,
+    });
+  };
+
   afterAll(async () => {
     if (app) {
       await app.close();
@@ -133,13 +166,20 @@ describe('GymSoinsHealthy — validation E2E', () => {
       expect(response.body.access_token.split('.')).toHaveLength(3);
 
       const jwtService = app.get(JwtService, { strict: false });
-      const payload = jwtService.verify<{ sub: string; email: string; role: string }>(
-        response.body.access_token,
-      );
+      const payload = jwtService.verify<{
+        sub: string;
+        email: string;
+        role: string;
+        tenantId: string;
+      }>(response.body.access_token);
 
       expect(payload.sub).toBe(response.body.user.id);
       expect(payload.email).toBe(TEST_ADMIN_EMAIL);
       expect(payload.role).toBe('SUPER_ADMIN');
+      expect(payload.tenantId).toBe(TEST_TENANT_ID);
+
+      expect(response.body.tenant.id).toBe(TEST_TENANT_ID);
+      expect(response.body.tenants).toHaveLength(1);
 
       accessToken = response.body.access_token;
     });
@@ -815,14 +855,23 @@ describe('GymSoinsHealthy — validation E2E', () => {
 
       let eventId: string;
 
-      await dataSource.transaction(async (manager) => {
-        eventId = await outbox.append(manager, {
-          eventType: 'test.outbox.retry',
-          aggregateType: 'test',
-          aggregateId: `test-outbox-${suffix}`,
-          payload: { hello: 'world' },
-        });
-      });
+      await runWithTenantContext(
+        {
+          tenantId: TEST_TENANT_ID,
+          userId: 'e2e-outbox',
+          role: 'SUPER_ADMIN',
+          membershipId: 'e2e-outbox',
+        },
+        () =>
+          dataSource.transaction(async (manager) => {
+            eventId = await outbox.append(manager, {
+              eventType: 'test.outbox.retry',
+              aggregateType: 'test',
+              aggregateId: `test-outbox-${suffix}`,
+              payload: { hello: 'world' },
+            });
+          }),
+      );
 
       await outbox.processBatch();
 
@@ -913,17 +962,31 @@ describe('GymSoinsHealthy — validation E2E', () => {
 
       await dataSource.query(
         `INSERT INTO bookings
-          ("clientId", "resourceType", "resourceId", "practitionerOrCoachId", "startTime", "endTime")
-         VALUES ($1, 'EQUIPMENT', $2, $3, $4, $5)`,
-        [`e2e-booking-db-a-${suffix}`, resourceId, practitioner, start, end],
+          ("tenantId", "clientId", "resourceType", "resourceId", "practitionerOrCoachId", "startTime", "endTime")
+         VALUES ($1, $2, 'EQUIPMENT', $3, $4, $5, $6)`,
+        [
+          TEST_TENANT_ID,
+          `e2e-booking-db-a-${suffix}`,
+          resourceId,
+          practitioner,
+          start,
+          end,
+        ],
       );
 
       await expect(
         dataSource.query(
           `INSERT INTO bookings
-            ("clientId", "resourceType", "resourceId", "practitionerOrCoachId", "startTime", "endTime")
-           VALUES ($1, 'EQUIPMENT', $2, $3, $4, $5)`,
-          [`e2e-booking-db-b-${suffix}`, resourceId, practitioner, start, end],
+            ("tenantId", "clientId", "resourceType", "resourceId", "practitionerOrCoachId", "startTime", "endTime")
+           VALUES ($1, $2, 'EQUIPMENT', $3, $4, $5, $6)`,
+          [
+            TEST_TENANT_ID,
+            `e2e-booking-db-b-${suffix}`,
+            resourceId,
+            practitioner,
+            start,
+            end,
+          ],
         ),
       ).rejects.toMatchObject({
         driverError: { code: '23P01' },
@@ -937,13 +1000,13 @@ describe('GymSoinsHealthy — validation E2E', () => {
   describe('3quinquies. KDS SSE', () => {
     it('crée un ticket court et le consomme une seule fois', async () => {
       const ticketService = app.get(KdsStreamTicketService);
-      const created = await ticketService.create('e2e-kds-user', 'CHEF');
+      const created = await ticketService.create('e2e-kds-user', 'CHEF', TEST_TENANT_ID);
 
       const firstUse = await ticketService.consume(created.ticket);
       expect(firstUse).toMatchObject({
         userId: 'e2e-kds-user',
         role: 'CHEF',
-        tenantId: 'default',
+        tenantId: TEST_TENANT_ID,
       });
 
       const replay = await ticketService.consume(created.ticket);
@@ -955,12 +1018,10 @@ describe('GymSoinsHealthy — validation E2E', () => {
         .post('/api/v1/healthy-food/kds/stream-ticket')
         .expect(401);
 
-      const jwtService = app.get(JwtService, { strict: false });
-      const receptionistToken = jwtService.sign({
-        sub: 'e2e-kds-receptionist',
-        email: 'receptionist.e2e@gymsoins.local',
-        role: 'RECEPTIONIST',
-      });
+      const receptionistToken = await signMembershipToken(
+        TEST_RECEPTIONIST_EMAIL,
+        'RECEPTIONIST',
+      );
 
       await http
         .post('/api/v1/healthy-food/kds/stream-ticket')
@@ -980,7 +1041,7 @@ describe('GymSoinsHealthy — validation E2E', () => {
     it('rejette les tickets expirés et invalides', async () => {
       const ticketService = app.get(KdsStreamTicketService);
       const dataSource = app.get(DataSource);
-      const created = await ticketService.create('e2e-expired', 'CHEF');
+      const created = await ticketService.create('e2e-expired', 'CHEF', TEST_TENANT_ID);
       const tokenHash = createHash('sha256')
         .update(created.ticket)
         .digest('hex');
@@ -1009,7 +1070,511 @@ describe('GymSoinsHealthy — validation E2E', () => {
       const session = await ticketService.consume(response.body.ticket);
 
       // Le tenant du ticket est dérivé du contexte serveur, jamais du body/query.
-      expect(session).toMatchObject({ tenantId: 'default' });
+      expect(session).toMatchObject({ tenantId: TEST_TENANT_ID });
+    });
+  });
+
+
+  // -------------------------------------------------------------------------
+  // 3sexies. Isolation multi-tenant A/B
+  // -------------------------------------------------------------------------
+  describe('3sexies. Isolation multi-tenant A/B', () => {
+    let tokenA: string;
+    let tokenB: string;
+    let tenantA: string;
+    let tenantB: string;
+    let userA: string;
+    let productA: string;
+    let productB: string;
+    let bookingA: string;
+    let careServiceA: string;
+    let ingredientA: string;
+    let dishA: string;
+    let orderA: string;
+    let equipmentA: string;
+    let subscriptionA: string;
+
+    const suffix = Date.now();
+    const registerTenant = (name: string, email: string, ip: string) =>
+      http
+        .post('/api/v1/auth/register')
+        .set('X-Forwarded-For', ip)
+        .send({
+          email,
+          password: 'TenantE2E123!',
+          username: name,
+          tenantName: `E2E ${name}`,
+        })
+        .expect(201);
+
+    it('crée deux tenants indépendants avec leur premier administrateur', async () => {
+      const [a, b] = await Promise.all([
+        registerTenant(`tenant-a-${suffix}`, `owner-a-${suffix}@gymsoins.local`, '10.10.10.11'),
+        registerTenant(`tenant-b-${suffix}`, `owner-b-${suffix}@gymsoins.local`, '10.10.10.12'),
+      ]);
+
+      tokenA = a.body.access_token;
+      tokenB = b.body.access_token;
+      tenantA = a.body.tenant.id;
+      tenantB = b.body.tenant.id;
+      userA = a.body.user.id;
+
+      expect(a.body.role).toBe('SUPER_ADMIN');
+      expect(b.body.role).toBe('SUPER_ADMIN');
+      expect(tenantA).not.toBe(tenantB);
+
+      const current = await http
+        .get('/api/v1/tenant/current')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+
+      expect(current.body.id).toBe(tenantA);
+    });
+
+    it('isole le catalogue Shop, les ventes et l’idempotence', async () => {
+      const sku = `MT-SHOP-${suffix}`;
+      const [a, b] = await Promise.all([
+        http
+          .post('/api/v1/shop')
+          .set('Authorization', `Bearer ${tokenA}`)
+          .send({
+            name: `Produit A ${suffix}`,
+            sku,
+            price: 10,
+            stockQuantity: 1,
+            category: 'BOISSON',
+            isActive: true,
+          })
+          .expect(201),
+        http
+          .post('/api/v1/shop')
+          .set('Authorization', `Bearer ${tokenB}`)
+          .send({
+            name: `Produit B ${suffix}`,
+            sku,
+            price: 20,
+            stockQuantity: 1,
+            category: 'BOISSON',
+            isActive: true,
+          })
+          .expect(201),
+      ]);
+
+      productA = a.body.id;
+      productB = b.body.id;
+
+      const listA = await http
+        .get('/api/v1/shop')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+      expect(listA.body.map((p: { id: string }) => p.id)).toContain(productA);
+      expect(listA.body.map((p: { id: string }) => p.id)).not.toContain(productB);
+
+      await http
+        .get(`/api/v1/shop/${productA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+
+      await http
+        .patch(`/api/v1/shop/${productA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ name: 'tentative-croisee' })
+        .expect(404);
+
+      await http
+        .delete(`/api/v1/shop/${productA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+
+      await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({
+          items: [{ productId: productA, quantity: 1 }],
+          paymentMethod: 'ESPECES',
+        })
+        .expect(404);
+
+      const key = `mt-same-key-${suffix}`;
+      const saleA = await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .set('Idempotency-Key', key)
+        .send({
+          items: [{ productId: productA, quantity: 1 }],
+          paymentMethod: 'ESPECES',
+        })
+        .expect(201);
+
+      const saleB = await http
+        .post('/api/v1/shop/sales/process')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .set('Idempotency-Key', key)
+        .send({
+          items: [{ productId: productB, quantity: 1 }],
+          paymentMethod: 'ESPECES',
+        })
+        .expect(201);
+
+      expect(saleA.body.saleId).not.toBe(saleB.body.saleId);
+    });
+
+    it('isole Booking, y compris les contraintes d’exclusion', async () => {
+      const resourceId = randomUUID();
+      const practitioner = `mt-booking-${suffix}`;
+      const start = new Date(Date.now() + 3 * 60 * 60 * 1000);
+      const end = new Date(start.getTime() + 60 * 60 * 1000);
+      const payload = (clientId: string) => ({
+        clientId,
+        resourceType: 'EQUIPMENT',
+        resourceId,
+        practitionerOrCoachId: practitioner,
+        startTime: start.toISOString(),
+        endTime: end.toISOString(),
+      });
+
+      const a = await http
+        .post('/api/v1/bookings')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send(payload(`mt-booking-a-${suffix}`))
+        .expect(201);
+      bookingA = a.body.id;
+
+      // Même ressource, même créneau, autre tenant : autorisé.
+      await http
+        .post('/api/v1/bookings')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send(payload(`mt-booking-b-${suffix}`))
+        .expect(201);
+
+      const listB = await http
+        .get('/api/v1/bookings')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(200);
+
+      expect(
+        listB.body.map((b: { clientId: string }) => b.clientId),
+      ).not.toContain(`mt-booking-a-${suffix}`);
+
+      await http
+        .delete(`/api/v1/bookings/${bookingA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+    });
+
+    it('isole Care, Healthy Food, Maintenance et Gym par ID', async () => {
+      const care = await http
+        .post('/api/v1/care/services')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          title: `Pack MT ${suffix}`,
+          durationMinutes: 45,
+          price: 50,
+          type: 'PACK',
+        })
+        .expect(201);
+      careServiceA = care.body.id;
+
+      await http
+        .get(`/api/v1/care/services/${careServiceA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+
+      await http
+        .post('/api/v1/care/packages/assign')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ clientId: `mt-care-client-${suffix}`, careServiceId: careServiceA, totalSessions: 2 })
+        .expect(404);
+
+      const ingredient = await http
+        .post('/api/v1/healthy-food/ingredients')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          name: `MT ingredient ${suffix}`,
+          unit: 'UNITE',
+          stockQuantity: 3,
+          alertThreshold: 0,
+        })
+        .expect(201);
+      ingredientA = ingredient.body.id;
+
+      const dish = await http
+        .post('/api/v1/healthy-food/dishes')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          name: `MT dish ${suffix}`,
+          price: 9,
+          category: 'PLAT',
+          isAvailable: true,
+          type: 'SUR_COMMANDE',
+        })
+        .expect(201);
+      dishA = dish.body.id;
+
+      await http
+        .post(`/api/v1/healthy-food/dishes/${dishA}/ingredients`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ ingredientId: ingredientA, quantityNeeded: 1 })
+        .expect(201);
+
+      await http
+        .get(`/api/v1/healthy-food/ingredients/${ingredientA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+      await http
+        .get(`/api/v1/healthy-food/dishes/${dishA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+
+      await http
+        .post('/api/v1/healthy-food/orders')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({
+          clientId: `mt-kds-b-${suffix}`,
+          type: 'SUR_PLACE',
+          items: [{ dishId: dishA, quantity: 1 }],
+        })
+        .expect(404);
+
+      const order = await http
+        .post('/api/v1/healthy-food/orders')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          clientId: `mt-kds-a-${suffix}`,
+          type: 'SUR_PLACE',
+          items: [{ dishId: dishA, quantity: 1 }],
+        })
+        .expect(201);
+      orderA = order.body.id;
+
+      await http
+        .put(`/api/v1/healthy-food/orders/${orderA}/status`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ status: 'EN_PREPARATION' })
+        .expect(404);
+
+      const equipment = await http
+        .post('/api/v1/maintenance/equipments')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          name: `MT equipment ${suffix}`,
+          serialNumber: `MT-SERIAL-${suffix}`,
+          category: 'CARDIO',
+          location: 'Salle A',
+        })
+        .expect(201);
+      equipmentA = equipment.body.id;
+
+      // Le même numéro de série est autorisé dans un autre tenant.
+      await http
+        .post('/api/v1/maintenance/equipments')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({
+          name: `MT equipment B ${suffix}`,
+          serialNumber: `MT-SERIAL-${suffix}`,
+          category: 'CARDIO',
+          location: 'Salle B',
+        })
+        .expect(201);
+
+      await http
+        .get(`/api/v1/maintenance/equipments/${equipmentA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+      await http
+        .post('/api/v1/maintenance/tickets')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({
+          equipmentId: equipmentA,
+          reportedByUserId: 'mt-b-user',
+          description: 'tentative croisée',
+        })
+        .expect(404);
+
+      const subscription = await http
+        .post('/api/v1/gym/subscriptions')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({
+          clientId: `mt-gym-client-${suffix}`,
+          type: 'MENSUEL',
+          startDate: new Date(Date.now() - 3600_000).toISOString(),
+          endDate: new Date(Date.now() + 86_400_000).toISOString(),
+        })
+        .expect(201);
+      subscriptionA = subscription.body.id;
+
+      await http
+        .get(`/api/v1/gym/subscriptions/${subscriptionA}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+    });
+
+    it('isole Loyalty et les statistiques Outbox', async () => {
+      const clientId = `mt-loyalty-${suffix}`;
+
+      await http
+        .post('/api/v1/loyalty/credit')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ clientId, points: 7 })
+        .expect(201);
+
+      await http
+        .get(`/api/v1/loyalty/balance/${clientId}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(404);
+
+      // Le même clientId crée un compte distinct dans le tenant B.
+      await http
+        .post('/api/v1/loyalty/credit')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ clientId, points: 3 })
+        .expect(201);
+
+      const balanceA = await http
+        .get(`/api/v1/loyalty/balance/${clientId}`)
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+      const balanceB = await http
+        .get(`/api/v1/loyalty/balance/${clientId}`)
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(200);
+      expect(balanceA.body.pointsBalance).toBe(7);
+      expect(balanceB.body.pointsBalance).toBe(3);
+
+      const dataSource = app.get(DataSource);
+      await dataSource.query(
+        `INSERT INTO outbox_events
+          ("tenantId", "eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "lastError", "createdAt", "updatedAt")
+         VALUES ($1, 'test.mt.failed', 'test', $2, '{}'::jsonb, 'FAILED', 1, NOW(), 'mt failure', NOW(), NOW()),
+                ($3, 'test.mt.failed', 'test', $4, '{}'::jsonb, 'FAILED', 1, NOW(), 'mt failure', NOW(), NOW())`,
+        [tenantA, `mt-outbox-a-${suffix}`, tenantB, `mt-outbox-b-${suffix}`],
+      );
+
+      const statsA = await http
+        .get('/api/v1/outbox/stats')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+      const statsB = await http
+        .get('/api/v1/outbox/stats')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .expect(200);
+
+      expect(statsA.body.FAILED).toBe(1);
+      expect(statsB.body.FAILED).toBe(1);
+    });
+
+    it('gère plusieurs adhésions et refuse un tenant non autorisé', async () => {
+      const dataSource = app.get(DataSource);
+      const role = await dataSource.query(
+        `SELECT id FROM roles WHERE name = 'CHEF'`,
+      );
+
+      await dataSource.query(
+        `INSERT INTO tenant_memberships ("tenantId", "userId", "roleId", status)
+         VALUES ($1, $2, $3, 'ACTIVE')
+         ON CONFLICT ("tenantId", "userId") DO NOTHING`,
+        [tenantB, userA, role[0].id],
+      );
+
+      const noTenant = await http
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', '10.10.10.13')
+        .send({ email: `owner-a-${suffix}@gymsoins.local`, password: 'TenantE2E123!' })
+        .expect(409);
+
+      expect(noTenant.body.code).toBe('TENANT_SELECTION_REQUIRED');
+      expect(noTenant.body.tenants).toHaveLength(2);
+
+      const selected = await http
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', '10.10.10.14')
+        .send({
+          email: `owner-a-${suffix}@gymsoins.local`,
+          password: 'TenantE2E123!',
+          tenantId: tenantB,
+        })
+        .expect(200);
+
+      expect(selected.body.tenant.id).toBe(tenantB);
+      expect(selected.body.role).toBe('CHEF');
+
+      const switched = await http
+        .post('/api/v1/auth/switch-tenant')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ tenantId: tenantB })
+        .expect(200);
+
+      expect(switched.body.tenant.id).toBe(tenantB);
+
+      const tenants = await http
+        .get('/api/v1/auth/tenants')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+      expect(tenants.body.map((t: { id: string }) => t.id).sort()).toEqual(
+        [tenantA, tenantB].sort(),
+      );
+
+      const members = await http
+        .get('/api/v1/tenant/members')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .expect(200);
+      expect(JSON.stringify(members.body)).not.toContain('passwordHash');
+      expect(members.body[0].user.email).toBe(`owner-a-${suffix}@gymsoins.local`);
+
+      await http
+        .post('/api/v1/auth/switch-tenant')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ tenantId: '11111111-1111-4111-8111-111111111111' })
+        .expect(403);
+    });
+
+    it('isole les tickets SSE et le flux KDS par tenant', async () => {
+      const ticketService = app.get(KdsStreamTicketService);
+      const events = app.get(KdsEventsService);
+      const dataSource = app.get(DataSource);
+
+      const ticketA = await ticketService.create('mt-a', 'CHEF', tenantA);
+      const ticketB = await ticketService.create('mt-b', 'CHEF', tenantB);
+      await expect(ticketService.consume(ticketA.ticket)).resolves.toMatchObject({
+        tenantId: tenantA,
+      });
+      await expect(ticketService.consume(ticketB.ticket)).resolves.toMatchObject({
+        tenantId: tenantB,
+      });
+
+      const receivedA: Array<Record<string, any>> = [];
+      const receivedB: Array<Record<string, any>> = [];
+
+      const subA = events.stream(tenantA).subscribe((message) => {
+        const data = message.data as Record<string, any>;
+        if (data?.eventType === 'kitchen.order.status_changed') receivedA.push(data);
+      });
+      const subB = events.stream(tenantB).subscribe((message) => {
+        const data = message.data as Record<string, any>;
+        if (data?.eventType === 'kitchen.order.status_changed') receivedB.push(data);
+      });
+
+      const orderId = `mt-sse-order-${suffix}`;
+      await dataSource.query(
+        `INSERT INTO outbox_events
+          ("tenantId", "eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "processedAt", "createdAt", "updatedAt")
+         VALUES ($1, 'kitchen.order.status_changed', 'kitchen_order', $2, $3::jsonb, 'PROCESSED', 1, NOW(), NOW(), NOW(), NOW())`,
+        [tenantA, orderId, JSON.stringify({ orderId, status: 'EN_PREPARATION' })],
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      subA.unsubscribe();
+      subB.unsubscribe();
+
+      expect(receivedA.some((event) => event.payload?.orderId === orderId)).toBe(true);
+      expect(receivedB.some((event) => event.payload?.orderId === orderId)).toBe(false);
+    });
+
+    it('refuse tout accès service sans contexte tenant explicite', async () => {
+      const bookingService = app.get(BookingService);
+      await expect(bookingService.findAllBookings()).rejects.toThrow(
+        'Contexte tenant absent',
+      );
     });
   });
 
@@ -1039,13 +1604,10 @@ describe('GymSoinsHealthy — validation E2E', () => {
         .send({ gymName: 'Test non autorisé' })
         .expect(401);
 
-      const jwtService = app.get(JwtService, { strict: false });
-      const receptionistToken = jwtService.sign({
-        sub: 'e2e-receptionist',
-        email: 'receptionist.e2e@gymsoins.local',
-        role: 'RECEPTIONIST',
-        permissions: [],
-      });
+      const receptionistToken = await signMembershipToken(
+        TEST_RECEPTIONIST_EMAIL,
+        'RECEPTIONIST',
+      );
 
       await http
         .get('/api/v1/settings')
@@ -1199,12 +1761,12 @@ describe('GymSoinsHealthy — validation E2E', () => {
 
       await dataSource.query(
         `INSERT INTO idempotency_keys
-          ("scope", "key", "requestHash", "status", "response", "createdAt", "updatedAt")
+          ("tenantId", "scope", "key", "requestHash", "status", "response", "createdAt", "updatedAt")
          VALUES
-          ($1, 'old-completed', 'hash', 'COMPLETED', '{}'::jsonb, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
-          ($1, 'recent-completed', 'hash', 'COMPLETED', '{}'::jsonb, NOW(), NOW()),
-          ($1, 'old-processing', 'hash', 'PROCESSING', NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days')`,
-        [scope],
+          ($1, $2, 'old-completed', 'hash', 'COMPLETED', '{}'::jsonb, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ($1, $2, 'recent-completed', 'hash', 'COMPLETED', '{}'::jsonb, NOW(), NOW()),
+          ($1, $2, 'old-processing', 'hash', 'PROCESSING', NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days')`,
+        [TEST_TENANT_ID, scope],
       );
 
       const result = await http
@@ -1231,14 +1793,15 @@ describe('GymSoinsHealthy — validation E2E', () => {
 
       await dataSource.query(
         `INSERT INTO outbox_events
-          ("eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "processedAt", "lastError", "createdAt", "updatedAt")
+          ("tenantId", "eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "processedAt", "lastError", "createdAt", "updatedAt")
          VALUES
-          ('test.retention', 'test', $1, '{}'::jsonb, 'PROCESSED', 1, NOW(), NOW() - INTERVAL '40 days', NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
-          ('test.retention', 'test', $2, '{}'::jsonb, 'PROCESSED', 1, NOW(), NOW(), NULL, NOW(), NOW()),
-          ('test.retention', 'test', $3, '{}'::jsonb, 'PENDING', 0, NOW(), NULL, NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
-          ('test.retention', 'test', $4, '{}'::jsonb, 'PROCESSING', 1, NOW(), NULL, NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
-          ('test.retention', 'test', $5, '{}'::jsonb, 'FAILED', 10, NOW(), NULL, 'boom', NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days')`,
+          ($1, 'test.retention', 'test', $2, '{}'::jsonb, 'PROCESSED', 1, NOW(), NOW() - INTERVAL '40 days', NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ($1, 'test.retention', 'test', $3, '{}'::jsonb, 'PROCESSED', 1, NOW(), NOW(), NULL, NOW(), NOW()),
+          ($1, 'test.retention', 'test', $4, '{}'::jsonb, 'PENDING', 0, NOW(), NULL, NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ($1, 'test.retention', 'test', $5, '{}'::jsonb, 'PROCESSING', 1, NOW(), NULL, NULL, NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days'),
+          ($1, 'test.retention', 'test', $6, '{}'::jsonb, 'FAILED', 10, NOW(), NULL, 'boom', NOW() - INTERVAL '40 days', NOW() - INTERVAL '40 days')`,
         [
+          TEST_TENANT_ID,
           `${prefix}-old-processed`,
           `${prefix}-recent-processed`,
           `${prefix}-pending`,
@@ -1418,10 +1981,10 @@ describe('GymSoinsHealthy — validation E2E', () => {
       const staleDate = new Date(Date.now() - 10 * 60 * 1000);
       const inserted = await dataSource.query(
         `INSERT INTO outbox_events
-          ("eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "createdAt", "updatedAt")
-         VALUES ('test.outbox.stale', 'test', $1, '{}'::jsonb, 'PROCESSING', 1, NOW(), NOW(), $2)
+          ("tenantId", "eventType", "aggregateType", "aggregateId", payload, status, attempts, "availableAt", "createdAt", "updatedAt")
+         VALUES ($1, 'test.outbox.stale', 'test', $2, '{}'::jsonb, 'PROCESSING', 1, NOW(), NOW(), $3)
          RETURNING id`,
-        [`stale-${suffix}`, staleDate],
+        [TEST_TENANT_ID, `stale-${suffix}`, staleDate],
       );
 
       const eventId = inserted[0].id;

@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
@@ -8,10 +10,18 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
+import { randomUUID } from 'node:crypto';
 
 import { metrics } from '../../core/observability/metrics.registry';
+import {
+  Tenant,
+  TenantMembership,
+  TenantMembershipStatus,
+  TenantStatus,
+  TenantService,
+} from '../../core/tenant';
 import type { LoginResponse, RegistrationDto, Role } from './index';
 import { AuthAuditService } from './auth-audit.service';
 import { RBAC_PERMISSIONS } from './permissions';
@@ -25,6 +35,13 @@ const LOGIN_LOCK_WINDOW_MINUTES = 15;
 export interface AuthRequestContext {
   ip?: string;
   userAgent?: string;
+}
+
+export interface TenantSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
 }
 
 @Injectable()
@@ -45,6 +62,8 @@ export class AuthService {
     private readonly roleRepository: Repository<RoleEntity>,
     private readonly jwtService: JwtService,
     private readonly authAuditService: AuthAuditService,
+    private readonly tenantService: TenantService,
+    private readonly dataSource: DataSource,
     configService: ConfigService,
   ) {
     this.loginEmailMaxAttempts = this.readNumber(
@@ -93,6 +112,7 @@ export class AuthService {
     email: string,
     password: string,
     context: AuthRequestContext = {},
+    requestedTenantId?: string,
   ): Promise<LoginResponse> {
     const normalizedEmail = email.trim().toLowerCase();
 
@@ -143,16 +163,81 @@ export class AuthService {
       throw new UnauthorizedException('Identifiants invalides');
     }
 
+    const memberships = await this.tenantService.findActiveMemberships(user.id);
+
+    if (memberships.length === 0) {
+      await this.authAuditService.record({
+        action: 'LOGIN',
+        email: normalizedEmail,
+        userId: user.id,
+        success: false,
+        ip: context.ip,
+        userAgent: context.userAgent,
+        metadata: { reason: 'NO_TENANT_MEMBERSHIP' },
+      });
+
+      throw new UnauthorizedException(
+        'Aucun établissement actif associé à cet utilisateur.',
+      );
+    }
+
+    let membership: TenantMembership | undefined;
+
+    if (requestedTenantId) {
+      membership = memberships.find(
+        (candidate) => candidate.tenantId === requestedTenantId,
+      );
+
+      if (!membership) {
+        await this.authAuditService.record({
+          action: 'LOGIN',
+          email: normalizedEmail,
+          userId: user.id,
+          success: false,
+          ip: context.ip,
+          userAgent: context.userAgent,
+          metadata: {
+            reason: 'TENANT_ACCESS_DENIED',
+            requestedTenantId,
+          },
+        });
+
+        throw new ForbiddenException(
+          'Accès à cet établissement refusé.',
+        );
+      }
+    } else if (memberships.length === 1) {
+      membership = memberships[0];
+    } else {
+      await this.authAuditService.record({
+        action: 'LOGIN',
+        email: normalizedEmail,
+        userId: user.id,
+        success: false,
+        ip: context.ip,
+        userAgent: context.userAgent,
+        metadata: { reason: 'TENANT_SELECTION_REQUIRED' },
+      });
+
+      throw new ConflictException({
+        code: 'TENANT_SELECTION_REQUIRED',
+        message:
+          'Plusieurs établissements sont associés à ce compte. Sélectionnez un tenant.',
+        tenants: memberships.map((candidate) => this.toTenantSummary(candidate)),
+      });
+    }
+
     await this.authAuditService.record({
       action: 'LOGIN',
       email: normalizedEmail,
       userId: user.id,
+      tenantId: membership.tenantId,
       success: true,
       ip: context.ip,
       userAgent: context.userAgent,
     });
 
-    return this.buildLoginResponse(user);
+    return this.buildLoginResponse(user, membership, memberships);
   }
 
   async register(
@@ -185,44 +270,110 @@ export class AuthService {
       throw new BadRequestException('Cet email est déjà utilisé');
     }
 
-    const roleName: Role = userData.role ?? 'RECEPTIONIST';
-    const role = await this.roleRepository.findOne({
-      where: { name: roleName },
+    const ownerRole = await this.roleRepository.findOne({
+      where: { name: 'SUPER_ADMIN' },
     });
 
-    if (!role) {
-      await this.authAuditService.record({
-        action: 'REGISTER',
-        email,
-        success: false,
-        ip: context.ip,
-        userAgent: context.userAgent,
-        metadata: { reason: 'UNKNOWN_ROLE', role: roleName },
-      });
-
-      throw new BadRequestException(`Rôle inconnu : ${roleName}`);
+    if (!ownerRole) {
+      throw new BadRequestException('Rôle SUPER_ADMIN indisponible');
     }
 
-    const user = await this.userRepository.save(
-      this.userRepository.create({
-        email,
-        username: userData.username?.trim() || null,
-        passwordHash: await bcrypt.hash(userData.password, BCRYPT_ROUNDS),
-        role,
-        isActive: true,
-      }),
-    );
+    const tenantName =
+      userData.tenantName?.trim() || `${userData.username.trim()} tenant`;
+    const slug = this.buildTenantSlug(tenantName);
+
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      const tenant = await manager.getRepository(Tenant).save(
+        manager.getRepository(Tenant).create({
+          name: tenantName,
+          slug,
+          status: TenantStatus.ACTIVE,
+        }),
+      );
+
+      const user = await manager.getRepository(User).save(
+        manager.getRepository(User).create({
+          email,
+          username: userData.username?.trim() || null,
+          passwordHash: await bcrypt.hash(userData.password, BCRYPT_ROUNDS),
+          role: ownerRole,
+          isActive: true,
+        }),
+      );
+
+      const membership = await manager.getRepository(TenantMembership).save(
+        manager.getRepository(TenantMembership).create({
+          tenantId: tenant.id,
+          userId: user.id,
+          roleId: ownerRole.id,
+          status: TenantMembershipStatus.ACTIVE,
+        }),
+      );
+
+      const hydratedMembership = await manager
+        .getRepository(TenantMembership)
+        .findOne({
+          where: { id: membership.id },
+          relations: { tenant: true, role: true },
+        });
+
+      return { tenant, user, membership: hydratedMembership ?? membership };
+    });
 
     await this.authAuditService.record({
       action: 'REGISTER',
       email,
+      userId: outcome.user.id,
+      tenantId: outcome.tenant.id,
+      success: true,
+      ip: context.ip,
+      userAgent: context.userAgent,
+      metadata: { tenantSlug: outcome.tenant.slug, firstAdmin: true },
+    });
+
+    return this.buildLoginResponse(outcome.user, outcome.membership, [
+      outcome.membership,
+    ]);
+  }
+
+  async switchTenant(
+    userId: string,
+    tenantId: string,
+    context: AuthRequestContext = {},
+  ): Promise<LoginResponse> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId, isActive: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Utilisateur introuvable ou inactif.');
+    }
+
+    const membership = await this.tenantService.findMembership(userId, tenantId);
+
+    if (!membership) {
+      throw new ForbiddenException('Accès à cet établissement refusé.');
+    }
+
+    const memberships = await this.tenantService.findActiveMemberships(userId);
+
+    await this.authAuditService.record({
+      action: 'TENANT_SWITCH',
+      email: user.email,
       userId: user.id,
+      tenantId: membership.tenantId,
       success: true,
       ip: context.ip,
       userAgent: context.userAgent,
     });
 
-    return this.buildLoginResponse(user);
+    return this.buildLoginResponse(user, membership, memberships);
+  }
+
+  async getTenants(userId: string): Promise<TenantSummary[]> {
+    const memberships = await this.tenantService.findActiveMemberships(userId);
+
+    return memberships.map((membership) => this.toTenantSummary(membership));
   }
 
   async refreshToken(
@@ -296,26 +447,26 @@ export class AuthService {
   }
 
   private async findActiveUserByEmail(email: string): Promise<User | null> {
-    const user = await this.userRepository.findOne({
-      where: { email: email.trim().toLowerCase() },
+    return this.userRepository.findOne({
+      where: { email: email.trim().toLowerCase(), isActive: true },
       relations: { role: true },
     });
-
-    if (!user || !user.isActive || !user.role) {
-      return null;
-    }
-
-    return user;
   }
 
-  private async buildLoginResponse(user: User): Promise<LoginResponse> {
-    const role = user.role?.name as Role;
+  private async buildLoginResponse(
+    user: User,
+    membership: TenantMembership,
+    memberships: TenantMembership[],
+  ): Promise<LoginResponse> {
+    const role = membership.role.name as Role;
     const permissions = RBAC_PERMISSIONS[role] ?? [];
 
     const accessToken = await this.jwtService.signAsync({
       sub: user.id,
       email: user.email,
       role,
+      tenantId: membership.tenantId,
+      membershipId: membership.id,
     });
 
     return {
@@ -323,6 +474,30 @@ export class AuthService {
       role,
       permissions,
       user: { id: user.id, email: user.email },
+      tenant: this.toTenantSummary(membership),
+      tenants: memberships.map((candidate) => this.toTenantSummary(candidate)),
     };
+  }
+
+  private toTenantSummary(membership: TenantMembership): TenantSummary {
+    return {
+      id: membership.tenantId,
+      slug: membership.tenant.slug,
+      name: membership.tenant.name,
+      role: membership.role.name,
+    };
+  }
+
+  private buildTenantSlug(name: string): string {
+    const base =
+      name
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60) || 'tenant';
+
+    return `${base}-${randomUUID().slice(0, 8)}`;
   }
 }

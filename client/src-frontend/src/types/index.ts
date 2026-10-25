@@ -17,11 +17,21 @@ export type LicensedFeature =
   | 'loyalty';
 
 /** Informations utilisateur authentifié */
+export interface TenantSummary {
+  id: string;
+  slug: string;
+  name: string;
+  role: UserRole;
+}
+
 export interface AuthUser {
   id: string;
   email: string;
   role: UserRole;
   permissions: string[];
+  tenantId?: string;
+  tenantName?: string;
+  tenants?: TenantSummary[];
 }
 
 /** Données de licence retournées par le backend */
@@ -38,6 +48,8 @@ export interface LoginResponse {
   role: UserRole;
   permissions: string[];
   user: { id: string; email: string };
+  tenant: TenantSummary;
+  tenants: TenantSummary[];
 }
 
 /** Types du module Shop (point de vente) */

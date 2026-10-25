@@ -50,14 +50,28 @@ import type {
   ProductCategory,
   Sale,
   SaleReceipt,
+  TenantSummary,
 } from '@/types';
 
 export const authAPI = {
-  login: (email: string, password: string, role?: string) =>
-    api.post<LoginResponse>('/api/v1/auth/login', { email, password, role }),
+  login: (email: string, password: string, tenantId?: string) =>
+    api.post<LoginResponse>('/api/v1/auth/login', {
+      email,
+      password,
+      ...(tenantId ? { tenantId } : {}),
+    }),
 
-  register: (data: { email: string; password: string; username: string; role?: string }) =>
-    api.post<LoginResponse>('/api/v1/auth/register', data),
+  register: (data: {
+    email: string;
+    password: string;
+    username: string;
+    tenantName?: string;
+  }) => api.post<LoginResponse>('/api/v1/auth/register', data),
+
+  getTenants: () => api.get<TenantSummary[]>('/api/v1/auth/tenants'),
+
+  switchTenant: (tenantId: string) =>
+    api.post<LoginResponse>('/api/v1/auth/switch-tenant', { tenantId }),
 
   refresh: (refreshToken: string) =>
     api.post<LoginResponse>('/api/v1/auth/refresh', { refreshToken }),

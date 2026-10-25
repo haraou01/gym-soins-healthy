@@ -18,6 +18,7 @@ import {
   IDEMPOTENCY_SCOPES,
 } from '../../../core/idempotency';
 import { OutboxService } from '../../../core/outbox';
+import { requireTenantId } from '../../../core/tenant';
 
 /** Seuil par défaut des alertes de stock bas. */
 export const DEFAULT_LOW_STOCK_THRESHOLD = 5;
@@ -66,12 +67,15 @@ export class ShopService {
 
   async findAllProducts(): Promise<Product[]> {
     return this.productRepository.find({
+      where: { tenantId: requireTenantId() },
       order: { category: 'ASC', name: 'ASC' },
     });
   }
 
   async findProductById(id: string): Promise<Product> {
-    const product = await this.productRepository.findOne({ where: { id } });
+    const product = await this.productRepository.findOne({
+      where: { id, tenantId: requireTenantId() },
+    });
 
     if (!product) {
       throw new NotFoundException(`Produit ${id} introuvable`);
@@ -81,11 +85,13 @@ export class ShopService {
   }
 
   async createProduct(dto: CreateProductDto): Promise<Product> {
+    const tenantId = requireTenantId();
     const sku = this.normalizeSku(dto.sku);
-    await this.ensureSkuAvailable(sku);
+    await this.ensureSkuAvailable(sku, tenantId);
 
     const isService = dto.isService ?? false;
     const product = this.productRepository.create({
+      tenantId,
       name: dto.name.trim(),
       sku,
       description: dto.description?.trim() || null,
@@ -106,7 +112,7 @@ export class ShopService {
       const sku = this.normalizeSku(dto.sku);
 
       if (sku !== product.sku) {
-        await this.ensureSkuAvailable(sku, id);
+        await this.ensureSkuAvailable(sku, product.tenantId, id);
         product.sku = sku;
       }
     }
@@ -151,7 +157,7 @@ export class ShopService {
     const product = await this.findProductById(id);
 
     const salesCount = await this.saleItemRepository.count({
-      where: { productId: id },
+      where: { productId: id, tenantId: product.tenantId },
     });
 
     if (salesCount > 0) {
@@ -180,7 +186,8 @@ export class ShopService {
 
     return this.productRepository
       .createQueryBuilder('product')
-      .where('product.isService = false')
+      .where('product.tenantId = :tenantId', { tenantId: requireTenantId() })
+      .andWhere('product.isService = false')
       .andWhere('product.isActive = true')
       .andWhere('product.stockQuantity <= :threshold', { threshold })
       .orderBy('product.stockQuantity', 'ASC')
@@ -201,6 +208,7 @@ export class ShopService {
     dto: CreateSaleDto,
     idempotencyKey?: string,
   ): Promise<Sale> {
+    const tenantId = requireTenantId();
     const items = dto.items ?? [];
 
     if (items.length === 0) {
@@ -224,7 +232,8 @@ export class ShopService {
       const products = await productRepository
         .createQueryBuilder('product')
         .setLock('pessimistic_write')
-        .where('product.id IN (:...productIds)', { productIds })
+        .where('product.tenantId = :tenantId', { tenantId })
+        .andWhere('product.id IN (:...productIds)', { productIds })
         .orderBy('product.id', 'ASC')
         .getMany();
 
@@ -269,6 +278,7 @@ export class ShopService {
       const saleRepository = manager.getRepository(Sale);
       const savedSale = await saleRepository.save(
         saleRepository.create({
+          tenantId,
           clientId: dto.clientId?.trim() || null,
           totalAmount: totalCents / 100,
           paymentMethod: dto.paymentMethod,
@@ -280,6 +290,7 @@ export class ShopService {
       await saleItemRepository.save(
         lines.map((line) =>
           saleItemRepository.create({
+            tenantId,
             saleId: savedSale.id,
             productId: line.product.id,
             quantity: line.quantity,
@@ -304,7 +315,7 @@ export class ShopService {
 
       const persistedSale =
         (await saleRepository.findOne({
-          where: { id: savedSale.id },
+          where: { id: savedSale.id, tenantId },
           relations: { items: { product: true } },
         })) ?? savedSale;
 
@@ -425,6 +436,7 @@ export class ShopService {
 
   async findAllSales(): Promise<Sale[]> {
     return this.saleRepository.find({
+      where: { tenantId: requireTenantId() },
       relations: { items: { product: true } },
       order: { createdAt: 'DESC' },
     });
@@ -432,7 +444,7 @@ export class ShopService {
 
   async findSalesByClient(clientId: string): Promise<Sale[]> {
     return this.saleRepository.find({
-      where: { clientId },
+      where: { clientId, tenantId: requireTenantId() },
       relations: { items: { product: true } },
       order: { createdAt: 'DESC' },
     });
@@ -440,8 +452,14 @@ export class ShopService {
 
   /** --- Helpers --- */
 
-  private async ensureSkuAvailable(sku: string, excludedId?: string): Promise<void> {
-    const existing = await this.productRepository.findOne({ where: { sku } });
+  private async ensureSkuAvailable(
+    sku: string,
+    tenantId: string,
+    excludedId?: string,
+  ): Promise<void> {
+    const existing = await this.productRepository.findOne({
+      where: { sku, tenantId },
+    });
 
     if (existing && existing.id !== excludedId) {
       throw new ConflictException(`Le SKU « ${sku} » est déjà utilisé`);

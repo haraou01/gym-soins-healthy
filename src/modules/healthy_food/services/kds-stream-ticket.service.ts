@@ -21,7 +21,7 @@ export class KdsStreamTicketService {
   async create(
     userId: string,
     role: string,
-    tenantId = 'default',
+    tenantId: string,
   ): Promise<{ ticket: string; expiresAt: Date }> {
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + 60_000);

@@ -6,6 +6,8 @@ import {
 import { createHash } from 'node:crypto';
 import type { EntityManager } from 'typeorm';
 
+import { requireTenantId } from '../tenant';
+
 export const IDEMPOTENCY_SCOPES = {
   SHOP_SALE: 'shop.sale',
   CARE_CONSUME: 'care.consume',
@@ -42,17 +44,18 @@ export class IdempotencyService {
       return { value: await handler(), replayed: false };
     }
 
+    const tenantId = requireTenantId();
     const requestHash = this.hash(payload);
 
     const inserted = await manager.query(
       `
         INSERT INTO "idempotency_keys"
-          ("scope", "key", "requestHash", "status")
-        VALUES ($1, $2, $3, 'PROCESSING')
-        ON CONFLICT ("scope", "key") DO NOTHING
+          ("tenantId", "scope", "key", "requestHash", "status")
+        VALUES ($1, $2, $3, $4, 'PROCESSING')
+        ON CONFLICT ("tenantId", "scope", "key") DO NOTHING
         RETURNING "id"
       `,
-      [scope, key, requestHash],
+      [tenantId, scope, key, requestHash],
     );
 
     if (inserted.length === 0) {
@@ -60,9 +63,9 @@ export class IdempotencyService {
         `
           SELECT "id", "requestHash", "status", "response"
           FROM "idempotency_keys"
-          WHERE "scope" = $1 AND "key" = $2
+          WHERE "tenantId" = $1 AND "scope" = $2 AND "key" = $3
         `,
-        [scope, key],
+        [tenantId, scope, key],
       );
 
       const existing = existingRows[0];

@@ -5,16 +5,8 @@ import { useSettings } from '@/hooks/useSettings';
 import { Button, Input, Card, Notice } from '@/components/ui';
 import { ThemeToggle } from '@/components/ui/ThemeToggle';
 import { getApiErrorMessage } from '@/lib/utils';
-import { Shield, User, Dumbbell, HeartPulse, ChefHat } from 'lucide-react';
-import type { UserRole } from '@/types';
-
-const ROLES: { value: UserRole; label: string; icon: React.ReactNode }[] = [
-  { value: 'SUPER_ADMIN', label: 'Super Administrateur', icon: <Shield size={20} /> },
-  { value: 'RECEPTIONIST', label: 'Réceptionniste', icon: <User size={20} /> },
-  { value: 'COACH', label: 'Coach', icon: <Dumbbell size={20} /> },
-  { value: 'THERAPIST', label: 'Thérapeute', icon: <HeartPulse size={20} /> },
-  { value: 'CHEF', label: 'Chef de cuisine', icon: <ChefHat size={20} /> },
-];
+import { Building2, Shield } from 'lucide-react';
+import type { TenantSummary } from '@/types';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -22,7 +14,8 @@ export default function LoginPage() {
   const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('SUPER_ADMIN');
+  const [tenants, setTenants] = useState<TenantSummary[]>([]);
+  const [selectedTenant, setSelectedTenant] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -31,10 +24,27 @@ export default function LoginPage() {
     setLoading(true);
     setError('');
     try {
-      await login(email, password, role);
+      await login(email, password, selectedTenant || undefined);
       navigate('/dashboard');
     } catch (err) {
-      setError(getApiErrorMessage(err, 'Identifiants invalides'));
+      const data = (
+        err as {
+          response?: {
+            data?: {
+              code?: string;
+              tenants?: TenantSummary[];
+            };
+          };
+        }
+      )?.response?.data;
+
+      if (data?.code === 'TENANT_SELECTION_REQUIRED' && data.tenants?.length) {
+        setTenants(data.tenants);
+        setSelectedTenant(data.tenants[0].id);
+        setError('Plusieurs établissements sont disponibles. Sélectionnez-en un.');
+      } else {
+        setError(getApiErrorMessage(err, 'Identifiants invalides'));
+      }
     } finally {
       setLoading(false);
     }
@@ -106,31 +116,29 @@ export default function LoginPage() {
             />
           </div>
 
-          <div className="space-y-2">
-            <span className="text-sm font-medium text-content">Rôle RBAC</span>
-            <div
-              role="group"
-              aria-label="Rôle RBAC"
-              className="grid grid-cols-2 gap-2"
-            >
-              {ROLES.map((r) => (
-                <button
-                  key={r.value}
-                  type="button"
-                  aria-pressed={role === r.value}
-                  onClick={() => setRole(r.value)}
-                  className={
-                    role === r.value
-                      ? 'flex flex-col items-center gap-1.5 rounded border border-brand-500 bg-brand-600/20 px-3 py-2 text-brand-700 dark:text-brand-300 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500'
-                      : 'flex flex-col items-center gap-1.5 rounded border border-line-strong bg-surface-raised px-3 py-2 text-content-muted transition-colors hover:border-brand-500/40 hover:text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500'
-                  }
-                >
-                  {r.icon}
-                  <span>{r.label}</span>
-                </button>
-              ))}
+          {tenants.length > 0 && (
+            <div className="space-y-2">
+              <label
+                htmlFor="login-tenant"
+                className="flex items-center gap-2 text-sm font-medium text-content"
+              >
+                <Building2 size={16} />
+                Établissement
+              </label>
+              <select
+                id="login-tenant"
+                value={selectedTenant}
+                onChange={(e) => setSelectedTenant(e.target.value)}
+                className="w-full rounded-md border border-line-strong bg-surface-raised px-3 py-2 text-sm text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              >
+                {tenants.map((tenant) => (
+                  <option key={tenant.id} value={tenant.id}>
+                    {tenant.name} ({tenant.role})
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
+          )}
 
           {error && <Notice tone="error">{error}</Notice>}
 

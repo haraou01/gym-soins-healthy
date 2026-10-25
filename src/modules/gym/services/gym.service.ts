@@ -20,6 +20,7 @@ import {
   AccessLog,
   AccessMethod,
 } from '../entities/access-log.entity';
+import { requireTenantId } from '../../../core/tenant';
 
 @Injectable()
 export class GymService {
@@ -46,10 +47,12 @@ export class GymService {
     userId: string,
     method: AccessMethod = AccessMethod.MANUEL,
   ): Promise<{ success: true; message: string }> {
+    const tenantId = requireTenantId();
     const now = new Date();
 
     const subscription = await this.subscriptionRepository.findOne({
       where: {
+        tenantId,
         clientId: userId,
         status: SubscriptionStatus.ACTIF,
         startDate: LessThanOrEqual(now),
@@ -87,11 +90,16 @@ export class GymService {
   }
 
   async findAllSubscriptions(): Promise<Subscription[]> {
-    return this.subscriptionRepository.find({ order: { createdAt: 'DESC' } });
+    return this.subscriptionRepository.find({
+      where: { tenantId: requireTenantId() },
+      order: { createdAt: 'DESC' },
+    });
   }
 
   async findSubscriptionById(id: string): Promise<Subscription> {
-    const subscription = await this.subscriptionRepository.findOne({ where: { id } });
+    const subscription = await this.subscriptionRepository.findOne({
+      where: { id, tenantId: requireTenantId() },
+    });
 
     if (!subscription) {
       throw new NotFoundException(`Abonnement ${id} introuvable`);
@@ -101,13 +109,21 @@ export class GymService {
   }
 
   async createSubscription(data: Partial<Subscription>): Promise<Subscription> {
-    const subscription = this.subscriptionRepository.create(data);
+    const { tenantId: _ignoredTenant, ...safeData } = data;
+    const subscription = this.subscriptionRepository.create({
+      ...safeData,
+      tenantId: requireTenantId(),
+    });
     return this.subscriptionRepository.save(subscription);
   }
 
   async updateSubscription(id: string, data: Partial<Subscription>): Promise<Subscription> {
-    await this.findSubscriptionById(id);
-    await this.subscriptionRepository.update(id, data);
+    const subscription = await this.findSubscriptionById(id);
+    const { tenantId: _ignoredTenant, ...safeData } = data;
+    await this.subscriptionRepository.update(
+      { id, tenantId: subscription.tenantId },
+      safeData,
+    );
     return this.findSubscriptionById(id);
   }
 
@@ -127,6 +143,7 @@ export class GymService {
     method: AccessMethod,
   ): Promise<void> {
     const accessLog = this.accessLogRepository.create({
+      tenantId: requireTenantId(),
       clientId,
       direction: AccessDirection.ENTREE,
       timestamp: new Date(),

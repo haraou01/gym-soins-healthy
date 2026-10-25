@@ -10,6 +10,7 @@ import {
 
 import { Roles } from '../security';
 import { RolesGuard } from '../security';
+import { requireTenantId } from '../tenant';
 import { OutboxService } from './outbox.service';
 
 @Controller('api/v1/outbox')
@@ -20,19 +21,22 @@ export class OutboxController {
 
   @Get('stats')
   async getStats() {
-    return this.outboxService.getStats();
+    return this.outboxService.getStats(requireTenantId());
   }
 
   @Get('failed')
   async findFailed() {
-    return this.outboxService.findFailed();
+    return this.outboxService.findFailed(100, requireTenantId());
   }
 
   @Post(':id/retry')
   async retry(
     @Param('id', new ParseUUIDPipe()) id: string,
   ) {
-    const event = await this.outboxService.requeueFailed(id);
+    const event = await this.outboxService.requeueFailed(
+      id,
+      requireTenantId(),
+    );
 
     if (!event) {
       throw new NotFoundException(

@@ -5,6 +5,9 @@ export class GroupClass {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Column()
   title: string;
 

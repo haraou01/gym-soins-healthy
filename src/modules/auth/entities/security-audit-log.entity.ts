@@ -12,6 +12,10 @@ export class SecurityAuditLog {
   id: string;
 
   @Index()
+  @Column({ name: 'tenantId', type: 'uuid', nullable: true })
+  tenantId: string | null;
+
+  @Index()
   @Column({ type: 'varchar', length: 64 })
   action: string;
 

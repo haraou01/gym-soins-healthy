@@ -9,6 +9,7 @@ export interface AuditEventInput {
   action: string;
   email?: string | null;
   userId?: string | null;
+  tenantId?: string | null;
   success: boolean;
   ip?: string | null;
   userAgent?: string | null;
@@ -39,6 +40,7 @@ export class AuthAuditService {
           action: input.action,
           email: input.email?.trim().toLowerCase() || null,
           userId: input.userId ?? null,
+          tenantId: input.tenantId ?? null,
           success: input.success,
           ip: input.ip?.slice(0, 64) ?? null,
           userAgent: input.userAgent?.slice(0, 500) ?? null,

@@ -13,8 +13,10 @@ export class LoyaltyAccount {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   /** Identifiant métier du client (référence externe au module clients). */
-  @Index({ unique: true })
   @Column({ type: 'varchar' })
   clientId: string;
 

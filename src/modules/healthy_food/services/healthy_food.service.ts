@@ -19,6 +19,7 @@ import {
   IDEMPOTENCY_SCOPES,
 } from '../../../core/idempotency';
 import { OutboxService } from '../../../core/outbox';
+import { requireTenantId } from '../../../core/tenant';
 import {
   AddDishIngredientDto,
   CreateDishDto,
@@ -59,11 +60,16 @@ export class HealthyFoodService {
   /** --- Ingrédients : inventaire --- */
 
   async findAllIngredients(): Promise<Ingredient[]> {
-    return this.ingredientRepository.find({ order: { name: 'ASC' } });
+    return this.ingredientRepository.find({
+      where: { tenantId: requireTenantId() },
+      order: { name: 'ASC' },
+    });
   }
 
   async findIngredientById(id: string): Promise<Ingredient> {
-    const ingredient = await this.ingredientRepository.findOne({ where: { id } });
+    const ingredient = await this.ingredientRepository.findOne({
+      where: { id, tenantId: requireTenantId() },
+    });
 
     if (!ingredient) {
       throw new NotFoundException(`Ingrédient ${id} introuvable`);
@@ -76,17 +82,20 @@ export class HealthyFoodService {
   async findLowStockIngredients(): Promise<Ingredient[]> {
     return this.ingredientRepository
       .createQueryBuilder('ingredient')
-      .where('ingredient.stockQuantity <= ingredient.alertThreshold')
+      .where('ingredient.tenantId = :tenantId', { tenantId: requireTenantId() })
+      .andWhere('ingredient.stockQuantity <= ingredient.alertThreshold')
       .orderBy('ingredient.stockQuantity', 'ASC')
       .addOrderBy('ingredient.name', 'ASC')
       .getMany();
   }
 
   async createIngredient(dto: CreateIngredientDto): Promise<Ingredient> {
+    const tenantId = requireTenantId();
     const name = dto.name.trim();
-    await this.ensureIngredientNameAvailable(name);
+    await this.ensureIngredientNameAvailable(name, tenantId);
 
     const ingredient = this.ingredientRepository.create({
+      tenantId,
       name,
       unit: dto.unit,
       stockQuantity: this.roundQuantity(dto.stockQuantity),
@@ -106,7 +115,7 @@ export class HealthyFoodService {
       const name = dto.name.trim();
 
       if (name.toLowerCase() !== ingredient.name.toLowerCase()) {
-        await this.ensureIngredientNameAvailable(name, id);
+        await this.ensureIngredientNameAvailable(name, ingredient.tenantId, id);
       }
 
       ingredient.name = name;
@@ -131,7 +140,7 @@ export class HealthyFoodService {
     const ingredient = await this.findIngredientById(id);
 
     const recipesCount = await this.dishIngredientRepository.count({
-      where: { ingredientId: id },
+      where: { ingredientId: id, tenantId: ingredient.tenantId },
     });
 
     if (recipesCount > 0) {
@@ -157,6 +166,7 @@ export class HealthyFoodService {
 
   async findAllDishes(): Promise<Dish[]> {
     return this.dishRepository.find({
+      where: { tenantId: requireTenantId() },
       relations: { ingredients: { ingredient: true } },
       order: { name: 'ASC' },
     });
@@ -164,7 +174,7 @@ export class HealthyFoodService {
 
   async findDishById(id: string): Promise<Dish> {
     const dish = await this.dishRepository.findOne({
-      where: { id },
+      where: { id, tenantId: requireTenantId() },
       relations: { ingredients: { ingredient: true } },
     });
 
@@ -177,6 +187,7 @@ export class HealthyFoodService {
 
   async createDish(dto: CreateDishDto): Promise<Dish> {
     const dish = this.dishRepository.create({
+      tenantId: requireTenantId(),
       name: dto.name.trim(),
       description: dto.description?.trim() || null,
       price: this.roundMoney(dto.price),
@@ -234,7 +245,7 @@ export class HealthyFoodService {
     await this.findDishById(dishId);
 
     return this.dishIngredientRepository.find({
-      where: { dishId },
+      where: { dishId, tenantId: requireTenantId() },
       relations: { ingredient: true },
       order: { ingredient: { name: 'ASC' } },
     });
@@ -250,13 +261,18 @@ export class HealthyFoodService {
     const quantityNeeded = this.roundQuantity(dto.quantityNeeded);
 
     let line = await this.dishIngredientRepository.findOne({
-      where: { dishId: dish.id, ingredientId: ingredient.id },
+      where: {
+        dishId: dish.id,
+        ingredientId: ingredient.id,
+        tenantId: dish.tenantId,
+      },
     });
 
     if (line) {
       line.quantityNeeded = quantityNeeded;
     } else {
       line = this.dishIngredientRepository.create({
+        tenantId: dish.tenantId,
         dishId: dish.id,
         ingredientId: ingredient.id,
         quantityNeeded,
@@ -266,7 +282,7 @@ export class HealthyFoodService {
     await this.dishIngredientRepository.save(line);
 
     return this.dishIngredientRepository.findOne({
-      where: { id: line.id },
+      where: { id: line.id, tenantId: dish.tenantId },
       relations: { ingredient: true, dish: true },
     });
   }
@@ -276,7 +292,7 @@ export class HealthyFoodService {
     ingredientId: string,
   ): Promise<void> {
     const line = await this.dishIngredientRepository.findOne({
-      where: { dishId, ingredientId },
+      where: { dishId, ingredientId, tenantId: requireTenantId() },
     });
 
     if (!line) {
@@ -301,6 +317,7 @@ export class HealthyFoodService {
     dto: CreateKitchenOrderDto,
     idempotencyKey?: string,
   ): Promise<KitchenOrder> {
+    const tenantId = requireTenantId();
     const items = dto.items ?? [];
 
     if (items.length === 0) {
@@ -320,7 +337,7 @@ export class HealthyFoodService {
         async () => {
           const dishIds = [...new Set(items.map((item) => item.dishId))];
       const dishes = await manager.getRepository(Dish).find({
-        where: { id: In(dishIds) },
+        where: { id: In(dishIds), tenantId },
         relations: { ingredients: { ingredient: true } },
       });
 
@@ -378,7 +395,8 @@ export class HealthyFoodService {
           .getRepository(Ingredient)
           .createQueryBuilder('ingredient')
           .setLock('pessimistic_write')
-          .where('ingredient.id IN (:...ingredientIds)', { ingredientIds })
+          .where('ingredient.tenantId = :tenantId', { tenantId })
+          .andWhere('ingredient.id IN (:...ingredientIds)', { ingredientIds })
           .orderBy('ingredient.id', 'ASC')
           .getMany();
 
@@ -428,6 +446,7 @@ export class HealthyFoodService {
 
       const persistedOrder = await orderRepository.save(
         orderRepository.create({
+          tenantId,
           clientId: dto.clientId.trim(),
           status: KitchenOrderStatus.EN_ATTENTE,
           type: dto.type,
@@ -509,8 +528,10 @@ export class HealthyFoodService {
       throw new BadRequestException(`Statut de commande invalide : ${status}`);
     }
 
+    const tenantId = requireTenantId();
+
     return this.kitchenOrderRepository.find({
-      where: status ? { status } : {},
+      where: status ? { status, tenantId } : { tenantId },
       order: { createdAt: 'DESC' },
     });
   }
@@ -521,13 +542,18 @@ export class HealthyFoodService {
     }
 
     return this.kitchenOrderRepository.find({
-      where: { clientId: clientId.trim() },
+      where: {
+        clientId: clientId.trim(),
+        tenantId: requireTenantId(),
+      },
       order: { createdAt: 'DESC' },
     });
   }
 
   async findOrderById(id: string): Promise<KitchenOrder> {
-    const order = await this.kitchenOrderRepository.findOne({ where: { id } });
+    const order = await this.kitchenOrderRepository.findOne({
+      where: { id, tenantId: requireTenantId() },
+    });
 
     if (!order) {
       throw new NotFoundException(`Commande ${id} introuvable`);
@@ -620,7 +646,7 @@ export class HealthyFoodService {
       }
 
       const dish = await manager.getRepository(Dish).findOne({
-        where: { id: item.dishId },
+        where: { id: item.dishId, tenantId: order.tenantId },
         relations: { ingredients: true },
       });
 
@@ -644,7 +670,8 @@ export class HealthyFoodService {
       .getRepository(Ingredient)
       .createQueryBuilder('ingredient')
       .setLock('pessimistic_write')
-      .where('ingredient.id IN (:...ingredientIds)', { ingredientIds })
+      .where('ingredient.tenantId = :tenantId', { tenantId: order.tenantId })
+      .andWhere('ingredient.id IN (:...ingredientIds)', { ingredientIds })
       .orderBy('ingredient.id', 'ASC')
       .getMany();
 
@@ -665,10 +692,12 @@ export class HealthyFoodService {
 
   private async ensureIngredientNameAvailable(
     name: string,
+    tenantId: string,
     excludedId?: string,
   ): Promise<void> {
     const existing = await this.ingredientRepository.findOne({
       where: {
+        tenantId,
         name: Raw((alias) => `LOWER(${alias}) = LOWER(:name)`, { name }),
       },
     });

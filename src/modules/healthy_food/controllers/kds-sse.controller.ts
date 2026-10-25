@@ -35,14 +35,16 @@ export class KdsSseController {
   async createStreamTicket(@Req() request: AuthenticatedRequest) {
     const user = request.user;
 
-    if (!user?.id || !user.role) {
-      throw new UnauthorizedException('Utilisateur non authentifié.');
+    if (!user?.id || !user.role || !user.tenantId) {
+      throw new UnauthorizedException(
+        'Utilisateur ou contexte tenant non authentifié.',
+      );
     }
 
     const ticket = await this.ticketService.create(
       user.id,
       user.role,
-      user.tenantId ?? 'default',
+      user.tenantId,
     );
 
     return {

@@ -135,6 +135,35 @@ jobs:
           kill -TERM "$(cat /tmp/retention-ci.pid)"
           wait "$(cat /tmp/retention-ci.pid)" || true
 
+      - name: KDS SSE tenant isolation smoke
+        env:
+          NODE_ENV: test
+          PORT: 3105
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 55432
+          POSTGRES_USERNAME: gymsoins
+          POSTGRES_PASSWORD: gymsoins
+          POSTGRES_DATABASE: gymsoins_ci
+          JWT_SECRET: ci-jwt-secret-change-me
+          LICENSE_DEV_MODE: true
+          OUTBOX_WORKER_ENABLED: true
+          OUTBOX_POLL_INTERVAL_MS: 500
+          RETENTION_PURGE_ENABLED: false
+          THROTTLE_LIMIT: 100000
+          SSE_VERIFY_BASE_URL: http://127.0.0.1:3105/api/v1
+        run: |
+          node dist/main.js > /tmp/kds-sse-ci.log 2>&1 &
+          echo $! > /tmp/kds-sse-ci.pid
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3105/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          npm run verify:kds-sse
+          kill -TERM "$(cat /tmp/kds-sse-ci.pid)"
+          wait "$(cat /tmp/kds-sse-ci.pid)" || true
+
       - name: Dependency audit — high production gate
         run: |
           npm audit --omit=dev --json > npm-audit.json || true

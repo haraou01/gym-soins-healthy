@@ -25,6 +25,7 @@ import { metrics } from '../../../core/observability/metrics.registry';
 
 interface OutboxRealtimeRow {
   id: string;
+  tenantId: string;
   eventType: string;
   payload: Record<string, unknown>;
   traceId: string | null;
@@ -139,7 +140,7 @@ export class KdsEventsService implements OnModuleInit, OnModuleDestroy {
     try {
       const rows: OutboxRealtimeRow[] = await this.dataSource.query(
         `
-          SELECT "id", "eventType", payload, "traceId", "processedAt"
+          SELECT "id", "tenantId", "eventType", payload, "traceId", "processedAt"
           FROM "outbox_events"
           WHERE "status" = 'PROCESSED'
             AND "eventType" IN ($1, $2)
@@ -163,7 +164,7 @@ export class KdsEventsService implements OnModuleInit, OnModuleDestroy {
         this.subject.next({
           id: row.id,
           type: row.eventType,
-          tenantId: String(row.payload?.tenantId ?? 'default'),
+          tenantId: String(row.tenantId),
           payload: row.payload ?? {},
           traceId: row.traceId,
         });

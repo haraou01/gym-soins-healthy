@@ -1,4 +1,4 @@
-import { IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, MinLength } from 'class-validator';
 
 import type { Role } from './permissions';
 
@@ -13,6 +13,11 @@ export class LoginDto {
   @IsOptional()
   @IsString({ each: true })
   permissions?: string[];
+
+  /** Tenant demandé : validé contre une adhésion active côté serveur. */
+  @IsOptional()
+  @IsUUID()
+  tenantId?: string;
 
   /** Champ historique envoyé par le frontend, ignoré par le service de login. */
   @IsOptional()
@@ -32,6 +37,12 @@ export class RegisterDto {
   @IsNotEmpty()
   username: string;
 
+  /** Nom du nouvel établissement créé par l'inscription self-service. */
+  @IsOptional()
+  @IsString()
+  @MinLength(2)
+  tenantName?: string;
+
   @IsOptional()
   @IsString()
   phone?: string;
@@ -39,4 +50,9 @@ export class RegisterDto {
   @IsOptional()
   @IsIn(['SUPER_ADMIN', 'RECEPTIONIST', 'COACH', 'THERAPIST', 'CHEF'])
   role?: Role = 'RECEPTIONIST';
+}
+
+export class SwitchTenantDto {
+  @IsUUID()
+  tenantId: string;
 }

@@ -5,7 +5,7 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Not, Repository } from 'typeorm';
+import { Brackets, DataSource, EntityManager, Not, Repository } from 'typeorm';
 
 import { Equipment, EquipmentStatus } from '../entities/equipment.entity';
 import {
@@ -14,6 +14,7 @@ import {
   MaintenanceTicketStatus,
   MaintenanceTicketType,
 } from '../entities/maintenance-ticket.entity';
+import { requireTenantId } from '../../../core/tenant';
 import {
   CreateEquipmentDto,
   UpdateEquipmentDto,
@@ -53,11 +54,16 @@ export class MaintenanceService {
   /** --- Inventaire des équipements --- */
 
   async findAllEquipment(): Promise<Equipment[]> {
-    return this.equipmentRepository.find({ order: { createdAt: 'DESC' } });
+    return this.equipmentRepository.find({
+      where: { tenantId: requireTenantId() },
+      order: { createdAt: 'DESC' },
+    });
   }
 
   async findEquipmentById(id: string): Promise<Equipment> {
-    const equipment = await this.equipmentRepository.findOne({ where: { id } });
+    const equipment = await this.equipmentRepository.findOne({
+      where: { id, tenantId: requireTenantId() },
+    });
 
     if (!equipment) {
       throw new NotFoundException(`Équipement ${id} introuvable`);
@@ -67,10 +73,13 @@ export class MaintenanceService {
   }
 
   async findEquipmentBySerial(serialNumber: string): Promise<Equipment | null> {
-    return this.equipmentRepository.findOne({ where: { serialNumber } });
+    return this.equipmentRepository.findOne({
+      where: { serialNumber, tenantId: requireTenantId() },
+    });
   }
 
   async createEquipment(dto: CreateEquipmentDto): Promise<Equipment> {
+    const tenantId = requireTenantId();
     const existing = await this.findEquipmentBySerial(dto.serialNumber);
 
     if (existing) {
@@ -85,6 +94,7 @@ export class MaintenanceService {
 
     const equipment = this.equipmentRepository.create({
       ...dto,
+      tenantId,
       name: dto.name.trim(),
       serialNumber: dto.serialNumber.trim(),
       location: dto.location.trim(),
@@ -165,7 +175,10 @@ export class MaintenanceService {
       );
     }
 
-    await this.equipmentRepository.update(id, update);
+    await this.equipmentRepository.update(
+      { id, tenantId: equipment.tenantId },
+      update,
+    );
 
     return this.findEquipmentById(id);
   }
@@ -177,6 +190,7 @@ export class MaintenanceService {
       // l'historique d'interventions pour respecter la clé étrangère.
       await manager.getRepository(MaintenanceTicket).delete({
         equipmentId: id,
+        tenantId: equipment.tenantId,
       });
       await manager.getRepository(Equipment).remove(equipment);
     });
@@ -186,13 +200,14 @@ export class MaintenanceService {
 
   async findAllTickets(): Promise<MaintenanceTicket[]> {
     return this.maintenanceTicketRepository.find({
+      where: { tenantId: requireTenantId() },
       order: { createdAt: 'DESC' },
     });
   }
 
   async findTicketById(id: string): Promise<MaintenanceTicket> {
     const ticket = await this.maintenanceTicketRepository.findOne({
-      where: { id },
+      where: { id, tenantId: requireTenantId() },
     });
 
     if (!ticket) {
@@ -206,7 +221,7 @@ export class MaintenanceService {
     equipmentId: string,
   ): Promise<MaintenanceTicket[]> {
     return this.maintenanceTicketRepository.find({
-      where: { equipmentId },
+      where: { equipmentId, tenantId: requireTenantId() },
       order: { createdAt: 'DESC' },
     });
   }
@@ -223,6 +238,7 @@ export class MaintenanceService {
       const ticketRepository = manager.getRepository(MaintenanceTicket);
 
       const ticket = ticketRepository.create({
+        tenantId: requireTenantId(),
         equipmentId: dto.equipmentId,
         reportedByUserId: dto.reportedByUserId,
         description: dto.description.trim(),
@@ -264,6 +280,7 @@ export class MaintenanceService {
       }
 
       const ticket = ticketRepository.create({
+        tenantId: requireTenantId(),
         equipmentId: dto.equipmentId,
         reportedByUserId: dto.reportedByUserId,
         description: dto.description.trim(),
@@ -307,7 +324,7 @@ export class MaintenanceService {
       const ticketRepository = manager.getRepository(MaintenanceTicket);
 
       const ticket = await ticketRepository.findOne({
-        where: { id },
+        where: { id, tenantId: requireTenantId() },
         lock: { mode: 'pessimistic_write' },
       });
 
@@ -392,7 +409,7 @@ export class MaintenanceService {
       const ticketRepository = manager.getRepository(MaintenanceTicket);
 
       const ticket = await ticketRepository.findOne({
-        where: { id },
+        where: { id, tenantId: requireTenantId() },
         lock: { mode: 'pessimistic_write' },
       });
 
@@ -462,15 +479,21 @@ export class MaintenanceService {
     const now = new Date();
     const candidates = await this.equipmentRepository
       .createQueryBuilder('equipment')
-      .where(
-        'equipment.nextPreventiveAt IS NOT NULL AND equipment.nextPreventiveAt <= :now',
-        { now },
-      )
-      .orWhere(
-        'equipment.preventiveUsageThreshold IS NOT NULL AND equipment.usageCount - equipment.usageAtLastPreventive >= equipment.preventiveUsageThreshold',
-      )
-      .orWhere(
-        'equipment.preventiveRunningHoursThreshold IS NOT NULL AND equipment.runningHours - equipment.runningHoursAtLastPreventive >= equipment.preventiveRunningHoursThreshold',
+      .where('equipment.tenantId = :tenantId', { tenantId: requireTenantId() })
+      .andWhere(
+        new Brackets((query) => {
+          query
+            .where(
+              'equipment.nextPreventiveAt IS NOT NULL AND equipment.nextPreventiveAt <= :now',
+              { now },
+            )
+            .orWhere(
+              'equipment.preventiveUsageThreshold IS NOT NULL AND equipment.usageCount - equipment.usageAtLastPreventive >= equipment.preventiveUsageThreshold',
+            )
+            .orWhere(
+              'equipment.preventiveRunningHoursThreshold IS NOT NULL AND equipment.runningHours - equipment.runningHoursAtLastPreventive >= equipment.preventiveRunningHoursThreshold',
+            );
+        }),
       )
       .getMany();
 
@@ -520,6 +543,7 @@ export class MaintenanceService {
   async getCostSummary(): Promise<TicketCostSummary> {
     const summary = await this.maintenanceTicketRepository
       .createQueryBuilder('ticket')
+      .where('ticket.tenantId = :tenantId', { tenantId: requireTenantId() })
       .select('COUNT(*)', 'totalTickets')
       .addSelect('COALESCE(SUM(ticket.cost), 0)', 'totalCost')
       .addSelect(
@@ -555,6 +579,9 @@ export class MaintenanceService {
       .createQueryBuilder('equipment')
       .setLock('pessimistic_write')
       .where('equipment.id = :id', { id })
+      .andWhere('equipment.tenantId = :tenantId', {
+        tenantId: requireTenantId(),
+      })
       .getOne();
 
     if (!equipment) {
@@ -572,7 +599,8 @@ export class MaintenanceService {
     const query = manager
       .getRepository(MaintenanceTicket)
       .createQueryBuilder('ticket')
-      .where('ticket.equipmentId = :equipmentId', { equipmentId })
+      .where('ticket.tenantId = :tenantId', { tenantId: requireTenantId() })
+      .andWhere('ticket.equipmentId = :equipmentId', { equipmentId })
       .andWhere('ticket.type = :type', {
         type: MaintenanceTicketType.PREVENTIF,
       })
@@ -595,6 +623,7 @@ export class MaintenanceService {
     const ticketRepository = manager.getRepository(MaintenanceTicket);
 
     const ticket = ticketRepository.create({
+      tenantId: equipment.tenantId,
       equipmentId: equipment.id,
       reportedByUserId,
       description:
@@ -619,6 +648,7 @@ export class MaintenanceService {
     const [openCorrective, openPreventive] = await Promise.all([
       ticketRepository.count({
         where: {
+          tenantId: equipment.tenantId,
           equipmentId: equipment.id,
           type: MaintenanceTicketType.CORRECTIF,
           status: Not(MaintenanceTicketStatus.RESOLU),
@@ -626,6 +656,7 @@ export class MaintenanceService {
       }),
       ticketRepository.count({
         where: {
+          tenantId: equipment.tenantId,
           equipmentId: equipment.id,
           type: MaintenanceTicketType.PREVENTIF,
           status: Not(MaintenanceTicketStatus.RESOLU),

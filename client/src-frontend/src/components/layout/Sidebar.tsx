@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { useLicense } from '@/hooks/useLicense';
@@ -13,7 +13,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({ open, onClose }: SidebarProps) {
-  const { user, logout } = useAuth();
+  const { user, logout, switchTenant } = useAuth();
+  const [switchingTenant, setSwitchingTenant] = useState(false);
   const { hasFeature } = useLicense();
   const { settings } = useSettings();
   const navigate = useNavigate();
@@ -150,9 +151,37 @@ export function Sidebar({ open, onClose }: SidebarProps) {
           <div className="mb-3">
             <p className="text-xs font-medium text-content-muted">Utilisateur</p>
             <p className="truncate text-sm text-content">{user?.email}</p>
+            <p className="mt-1 truncate text-xs text-content-subtle">
+              {user?.tenantName ?? 'Établissement courant'}
+            </p>
             <span className="mt-1 inline-flex items-center gap-1 rounded border border-line bg-surface-raised px-2 py-0.5 text-xs font-semibold text-content-muted">
               {user?.role}
             </span>
+            {user?.tenants && user.tenants.length > 1 && (
+              <select
+                aria-label="Changer d’établissement"
+                value={user.tenantId ?? ''}
+                disabled={switchingTenant}
+                onChange={async (event) => {
+                  const tenantId = event.target.value;
+                  if (!tenantId || tenantId === user.tenantId) return;
+                  setSwitchingTenant(true);
+                  try {
+                    await switchTenant(tenantId);
+                    window.location.reload();
+                  } catch {
+                    setSwitchingTenant(false);
+                  }
+                }}
+                className="mt-2 w-full rounded border border-line-strong bg-surface-raised px-2 py-1.5 text-xs text-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              >
+                {user.tenants.map((tenant) => (
+                  <option key={tenant.id} value={tenant.id}>
+                    {tenant.name} ({tenant.role})
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <button
             type="button"

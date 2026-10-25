@@ -68,6 +68,9 @@ export class KitchenOrder {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Index()
   @Column({ type: 'varchar', length: 64 })
   clientId: string;

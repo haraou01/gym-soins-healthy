@@ -14,10 +14,13 @@ import { Ingredient } from './ingredient.entity';
 
 /** Ligne de recette : quantité d'ingrédient nécessaire pour un plat. */
 @Entity('dish_ingredients')
-@Unique('uq_dish_ingredients_dish_ingredient', ['dishId', 'ingredientId'])
+@Unique('uq_dish_ingredients_tenant_dish_ingredient', ['tenantId', 'dishId', 'ingredientId'])
 export class DishIngredient {
   @PrimaryGeneratedColumn('uuid')
   id: string;
+
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
 
   @Index()
   @Column({ type: 'uuid' })

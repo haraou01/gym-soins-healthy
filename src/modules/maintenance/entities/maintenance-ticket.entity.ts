@@ -30,6 +30,9 @@ export class MaintenanceTicket {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Column()
   equipmentId: string;
 

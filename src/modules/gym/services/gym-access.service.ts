@@ -12,6 +12,7 @@ import {
   AccessDirection,
   AccessMethod,
 } from '../entities/access-log.entity';
+import { requireTenantId } from '../../../core/tenant';
 
 export interface CheckInResult {
   granted: boolean;
@@ -45,9 +46,11 @@ export class GymAccessService {
     clientId: string,
     accessMethod: AccessMethod,
   ): Promise<CheckInResult> {
+    const tenantId = requireTenantId();
     // 1. Récupérer l'abonnement actif du client
     const subscription = await this.subscriptionRepository.findOne({
       where: {
+        tenantId,
         clientId,
         status: SubscriptionStatus.ACTIF,
       },
@@ -65,9 +68,12 @@ export class GymAccessService {
 
     // 2. Vérifier validité temporelle
     if (!subscription.isActive()) {
-      await this.subscriptionRepository.update(subscription.id, {
-        status: SubscriptionStatus.EXPIRE,
-      });
+      await this.subscriptionRepository.update(
+        { id: subscription.id, tenantId },
+        {
+          status: SubscriptionStatus.EXPIRE,
+        },
+      );
       return await this.logAccess(
         clientId,
         AccessDirection.ENTREE,
@@ -149,6 +155,7 @@ export class GymAccessService {
   async getActiveSubscription(clientId: string): Promise<Subscription | null> {
     const subscription = await this.subscriptionRepository.findOne({
       where: {
+        tenantId: requireTenantId(),
         clientId,
         status: SubscriptionStatus.ACTIF,
       },
@@ -164,6 +171,7 @@ export class GymAccessService {
   /** Derniers passages au tourniquet (entrées et sorties), du plus récent au plus ancien. */
   async findRecentAccessLogs(limit = 50): Promise<AccessLog[]> {
     return this.accessLogRepository.find({
+      where: { tenantId: requireTenantId() },
       order: { timestamp: 'DESC' },
       take: limit,
     });
@@ -177,7 +185,7 @@ export class GymAccessService {
    */
   private findLastGrantedAccess(clientId: string): Promise<AccessLog | null> {
     return this.accessLogRepository.findOne({
-      where: { clientId, granted: true },
+      where: { tenantId: requireTenantId(), clientId, granted: true },
       order: { timestamp: 'DESC' },
     });
   }
@@ -194,6 +202,7 @@ export class GymAccessService {
     subscription?: Subscription,
   ): Promise<CheckInResult> {
     const accessLog = this.accessLogRepository.create({
+      tenantId: requireTenantId(),
       clientId,
       direction,
       timestamp: new Date(),

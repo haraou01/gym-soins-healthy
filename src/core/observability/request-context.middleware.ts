@@ -18,7 +18,7 @@ const REQUEST_ID_HEADER = 'x-request-id';
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 interface AuthenticatedRequest extends Request {
-  user?: { id?: string; role?: string };
+  user?: { id?: string; role?: string; tenantId?: string };
   requestId?: string;
   traceId?: string;
 }
@@ -107,7 +107,7 @@ export function requestContextMiddleware(
       durationMs: Math.round(durationMs * 100) / 100,
       userId: request.user?.id ?? null,
       role: request.user?.role ?? null,
-      tenantId: null,
+      tenantId: request.user?.tenantId ?? null,
       ip: request.ip ?? null,
     });
   };

@@ -26,6 +26,9 @@ export class Sale {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   /** Client facultatif : une vente peut être anonyme (client de passage). */
   @Index()
   @Column({ type: 'varchar', length: 64, nullable: true })

@@ -29,6 +29,9 @@ export class Dish {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Column({ type: 'varchar', length: 150 })
   name: string;
 

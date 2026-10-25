@@ -9,6 +9,7 @@ import { DataSource, EntityManager, QueryFailedError, Repository } from 'typeorm
 
 import { Booking, BookingResourceType, BookingStatus } from '../entities/booking.entity';
 import type { CreateBookingDto } from '../dto/booking.dto';
+import { requireTenantId } from '../../../core/tenant';
 
 export interface UpdateBookingDto {
   status?: BookingStatus;
@@ -32,6 +33,8 @@ export class BookingService {
   /** --- Création de réservation transactionnelle et anti-conflit --- */
 
   async createBooking(dto: CreateBookingDto): Promise<Booking> {
+    const tenantId = requireTenantId();
+
     if (dto.startTime >= dto.endTime) {
       throw new BadRequestException(
         'L\'heure de début doit être antérieure à l\'heure de fin',
@@ -42,11 +45,12 @@ export class BookingService {
       return await this.dataSource.transaction(async (manager) => {
       // 1. Sérialiser les créations concurrentes pour la ressource et le praticien.
       //    Les verrous sont pris dans un ordre déterministe pour éviter les deadlocks.
-      await this.acquireBookingLocks(manager, dto);
+      await this.acquireBookingLocks(manager, dto, tenantId);
 
       // 2. Vérifier le chevauchement directement en SQL, dans la transaction.
       const resourceConflict = await this.checkResourceConflict(
         manager,
+        tenantId,
         dto.resourceType,
         dto.resourceId,
         dto.startTime,
@@ -61,6 +65,7 @@ export class BookingService {
 
       const practitionerConflict = await this.checkPractitionerConflict(
         manager,
+        tenantId,
         dto.practitionerOrCoachId,
         dto.startTime,
         dto.endTime,
@@ -75,6 +80,7 @@ export class BookingService {
       // 3. Création atomique : le verrou est libéré au commit de la transaction.
       const repository = manager.getRepository(Booking);
       const booking = repository.create({
+        tenantId,
         clientId: dto.clientId,
         resourceType: dto.resourceType,
         resourceId: dto.resourceId,
@@ -105,10 +111,11 @@ export class BookingService {
   private async acquireBookingLocks(
     manager: EntityManager,
     dto: CreateBookingDto,
+    tenantId: string,
   ): Promise<void> {
     const lockKeys = [
-      `booking:resource:${dto.resourceType}:${dto.resourceId}`,
-      `booking:practitioner:${dto.practitionerOrCoachId}`,
+      `booking:${tenantId}:resource:${dto.resourceType}:${dto.resourceId}`,
+      `booking:${tenantId}:practitioner:${dto.practitionerOrCoachId}`,
     ];
 
     for (const lockKey of [...new Set(lockKeys)].sort()) {
@@ -127,6 +134,7 @@ export class BookingService {
    */
   private async checkResourceConflict(
     manager: EntityManager,
+    tenantId: string,
     resourceType: BookingResourceType,
     resourceId: string,
     startTime: Date,
@@ -134,7 +142,8 @@ export class BookingService {
   ): Promise<ConflictCheck> {
     const conflict = await manager
       .createQueryBuilder(Booking, 'booking')
-      .where('booking.resourceType = :resourceType', { resourceType })
+      .where('booking.tenantId = :tenantId', { tenantId })
+      .andWhere('booking.resourceType = :resourceType', { resourceType })
       .andWhere('booking.resourceId = :resourceId', { resourceId })
       .andWhere('booking.status = :status', { status: BookingStatus.CONFIRME })
       .andWhere('booking.startTime < :endTime', { endTime })
@@ -150,13 +159,15 @@ export class BookingService {
    */
   private async checkPractitionerConflict(
     manager: EntityManager,
+    tenantId: string,
     practitionerOrCoachId: string,
     startTime: Date,
     endTime: Date,
   ): Promise<ConflictCheck> {
     const conflict = await manager
       .createQueryBuilder(Booking, 'booking')
-      .where('booking.practitionerOrCoachId = :practitionerOrCoachId', {
+      .where('booking.tenantId = :tenantId', { tenantId })
+      .andWhere('booking.practitionerOrCoachId = :practitionerOrCoachId', {
         practitionerOrCoachId,
       })
       .andWhere('booking.status = :status', { status: BookingStatus.CONFIRME })
@@ -211,7 +222,10 @@ export class BookingService {
   }
 
   async findBookingById(id: string): Promise<Booking> {
-    const booking = await this.bookingRepository.findOne({ where: { id } });
+    const tenantId = requireTenantId();
+    const booking = await this.bookingRepository.findOne({
+      where: { id, tenantId },
+    });
 
     if (!booking) {
       throw new NotFoundException(`Booking ${id} introuvable`);
@@ -221,12 +235,15 @@ export class BookingService {
   }
 
   async findAllBookings(): Promise<Booking[]> {
-    return this.bookingRepository.find({ order: { startTime: 'ASC' } });
+    return this.bookingRepository.find({
+      where: { tenantId: requireTenantId() },
+      order: { startTime: 'ASC' },
+    });
   }
 
   async findBookingsByClient(clientId: string): Promise<Booking[]> {
     return this.bookingRepository.find({
-      where: { clientId },
+      where: { clientId, tenantId: requireTenantId() },
       order: { startTime: 'ASC' },
     });
   }
@@ -236,14 +253,14 @@ export class BookingService {
     resourceId: string,
   ): Promise<Booking[]> {
     return this.bookingRepository.find({
-      where: { resourceType, resourceId },
+      where: { resourceType, resourceId, tenantId: requireTenantId() },
       order: { startTime: 'ASC' },
     });
   }
 
   async findBookingsByPractitioner(practitionerOrCoachId: string): Promise<Booking[]> {
     return this.bookingRepository.find({
-      where: { practitionerOrCoachId },
+      where: { practitionerOrCoachId, tenantId: requireTenantId() },
       order: { startTime: 'ASC' },
     });
   }
@@ -254,7 +271,8 @@ export class BookingService {
   ): Promise<Booking[]> {
     return this.bookingRepository
       .createQueryBuilder('booking')
-      .where('booking.status = :status', { status: BookingStatus.CONFIRME })
+      .where('booking.tenantId = :tenantId', { tenantId: requireTenantId() })
+      .andWhere('booking.status = :status', { status: BookingStatus.CONFIRME })
       .andWhere('booking.startTime < :endTime', { endTime })
       .andWhere('booking.endTime > :startTime', { startTime })
       .orderBy('booking.startTime', 'ASC')

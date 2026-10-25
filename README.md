@@ -258,6 +258,21 @@ Le worker expose :
 
 Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise PostgreSQL comme source de vérité. Redis n'est pas requis.
 
+### SaaS multi-tenant
+
+- Modèle : `tenants`, `tenant_memberships`, rôles par établissement.
+- `POST /api/v1/auth/register` crée un tenant et son premier `SUPER_ADMIN`.
+- `POST /api/v1/auth/login` accepte un `tenantId` optionnel ; en cas de plusieurs adhésions sans choix, l'API renvoie `409 TENANT_SELECTION_REQUIRED`.
+- `GET /api/v1/auth/tenants` liste les adhésions actives.
+- `POST /api/v1/auth/switch-tenant` valide l'adhésion cible puis émet un nouveau JWT.
+- Aucun `tenantId` client n'est accepté comme autorité ; le contexte vient du JWT et de l'adhésion vérifiée en base à chaque requête.
+- Toutes les données métier, l'Outbox, l'idempotence et les tickets SSE sont tenant-scoped.
+- `settings` reste global (branding/configuration de déploiement).
+- RLS n'est pas activé ; les accès SQL directs hors application ne sont pas protégés. Voir le risque documenté.
+- Audit : `docs/architecture/multi-tenant-audit.md`.
+- Design : `docs/architecture/multi-tenant-design.md`.
+- Matrice de validation : `docs/operations/phase-4-validation-matrix.md`.
+
 ### KDS temps réel
 
 - Ticket court à usage unique : `POST /api/v1/healthy-food/kds/stream-ticket` (SUPER_ADMIN/CHEF).
@@ -265,6 +280,8 @@ Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise Postg
 - Événements : `kitchen.order.created`, `kitchen.order.status_changed`, `resync`, `ping`.
 - Aucun JWT longue durée dans l’URL.
 - Reconnexion client avec backoff et nouveau ticket.
+- Isolation tenant du ticket et du flux SSE.
+- Preuve reproductible : `npm run verify:kds-sse` (API locale en cours d'exécution).
 - Fallback polling 10 s si SSE indisponible.
 - PostgreSQL reste la source de vérité ; le SSE ne fait que notifier.
 - Métriques : `kds_sse_connections_total`, `kds_sse_disconnects_total`, `kds_sse_active_connections`, `kds_events_published_total`, `kds_poll_errors_total`.
@@ -273,7 +290,7 @@ Le modèle actuel est mono-établissement : le tenant par défaut est `default`.
 
 ### Observabilité
 
-- Logs JSON structurés avec `requestId`.
+- Logs JSON structurés avec `requestId` et `tenantId`.
 - En-tête `X-Request-Id` accepté et propagé.
 - Tracing W3C : `traceparent`, `X-Trace-Id`, `traceId`/`spanId` dans les logs et les événements Outbox.
 - Métriques Prometheus : `GET /api/v1/observability/metrics` (SUPER_ADMIN).
@@ -343,6 +360,10 @@ Le contrôle `npm run audit:secrets` vérifie les fichiers versionnés. Il est e
 - `docs/npm-audit.md` — triage dépendances et décisions.
 - `docs/staging-deployment.md` — CI/staging, blocages externes et prérequis.
 - `ops/README.md` — Prometheus/Grafana, métriques et alertes.
+- `docs/architecture/multi-tenant-audit.md` — audit initial.
+- `docs/architecture/multi-tenant-design.md` — modèle et décisions.
+- `docs/operations/phase-4-validation-matrix.md` — preuves et statuts honnêtes.
+- `docs/operations/staging-runbook.md` — runbook staging et blocages externes.
 
 ## Notes de sécurité
 

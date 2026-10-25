@@ -17,6 +17,10 @@ import {
   getTraceContext,
   runWithTraceContext,
 } from '../tracing';
+import {
+  requireTenantId,
+  runWithTenantContext,
+} from '../tenant';
 
 export type OutboxStatus = 'PENDING' | 'PROCESSING' | 'PROCESSED' | 'FAILED';
 
@@ -29,6 +33,7 @@ export interface AppendOutboxEventInput {
 
 export interface OutboxEvent {
   id: string;
+  tenantId: string;
   eventType: string;
   aggregateType: string;
   aggregateId: string;
@@ -80,6 +85,7 @@ export class OutboxService {
     manager: EntityManager,
     input: AppendOutboxEventInput,
   ): Promise<string> {
+    const tenantId = requireTenantId();
     const trace = getTraceContext();
     const span = this.tracer.startSpan('outbox.append', {
       kind: SpanKind.PRODUCER,
@@ -97,11 +103,12 @@ export class OutboxService {
       const rows = await manager.query(
         `
           INSERT INTO "outbox_events"
-            ("eventType", "aggregateType", "aggregateId", "payload", "status", "traceId", "spanId")
-          VALUES ($1, $2, $3, $4::jsonb, 'PENDING', $5, $6)
+            ("tenantId", "eventType", "aggregateType", "aggregateId", "payload", "status", "traceId", "spanId")
+          VALUES ($1, $2, $3, $4, $5::jsonb, 'PENDING', $6, $7)
           RETURNING "id"
         `,
         [
+          tenantId,
           input.eventType,
           input.aggregateType,
           input.aggregateId,
@@ -184,14 +191,22 @@ export class OutboxService {
     return events.length;
   }
 
-  async getStats(): Promise<OutboxStats> {
+  async getStats(tenantId?: string): Promise<OutboxStats> {
     const rows: Array<{ status: OutboxStatus; count: string }> =
       await this.dataSource.query(
-        `
-          SELECT "status", COUNT(*)::text AS "count"
-          FROM "outbox_events"
-          GROUP BY "status"
-        `,
+        tenantId
+          ? `
+            SELECT "status", COUNT(*)::text AS "count"
+            FROM "outbox_events"
+            WHERE "tenantId" = $1
+            GROUP BY "status"
+          `
+          : `
+            SELECT "status", COUNT(*)::text AS "count"
+            FROM "outbox_events"
+            GROUP BY "status"
+          `,
+        tenantId ? [tenantId] : [],
       );
 
     const stats: OutboxStats = {
@@ -208,16 +223,24 @@ export class OutboxService {
     return stats;
   }
 
-  async findFailed(limit = 100): Promise<OutboxEvent[]> {
+  async findFailed(limit = 100, tenantId?: string): Promise<OutboxEvent[]> {
     return this.dataSource.query(
-      `
-        SELECT *
-        FROM "outbox_events"
-        WHERE "status" = 'FAILED'
-        ORDER BY "updatedAt" DESC
-        LIMIT $1
-      `,
-      [limit],
+      tenantId
+        ? `
+          SELECT *
+          FROM "outbox_events"
+          WHERE "status" = 'FAILED' AND "tenantId" = $1
+          ORDER BY "updatedAt" DESC
+          LIMIT $2
+        `
+        : `
+          SELECT *
+          FROM "outbox_events"
+          WHERE "status" = 'FAILED'
+          ORDER BY "updatedAt" DESC
+          LIMIT $1
+        `,
+      tenantId ? [tenantId, limit] : [limit],
     );
   }
 
@@ -231,7 +254,10 @@ export class OutboxService {
   }
 
   /** Remet un événement FAILED en file d'attente. */
-  async requeueFailed(id: string): Promise<OutboxEvent | null> {
+  async requeueFailed(
+    id: string,
+    tenantId?: string,
+  ): Promise<OutboxEvent | null> {
     const result = await this.dataSource.query(
       `
         UPDATE "outbox_events"
@@ -241,10 +267,12 @@ export class OutboxService {
             "processedAt" = NULL,
             "lastError" = NULL,
             "updatedAt" = NOW()
-        WHERE "id" = $1 AND "status" = 'FAILED'
+        WHERE "id" = $1
+          AND "status" = 'FAILED'
+          AND ($2::uuid IS NULL OR "tenantId" = $2)
         RETURNING *
       `,
-      [id],
+      [id, tenantId ?? null],
     );
 
     const rows = this.extractRows<OutboxEvent>(result);
@@ -316,7 +344,15 @@ export class OutboxService {
       },
       parentContext,
       async (span) => {
-        await runWithTraceContext(context, async () => {
+        await runWithTenantContext(
+          {
+            tenantId: event.tenantId,
+            userId: 'SYSTEM',
+            role: 'SYSTEM',
+            membershipId: 'SYSTEM',
+          },
+          () =>
+            runWithTraceContext(context, async () => {
           try {
             const payload =
               event.payload && typeof event.payload === 'object'
@@ -325,6 +361,7 @@ export class OutboxService {
 
             await this.eventEmitter.emitAsync(event.eventType, {
               ...payload,
+              tenantId: event.tenantId,
               outboxEventId: event.id,
             });
 
@@ -361,7 +398,8 @@ export class OutboxService {
             });
             await this.markFailed(event, error);
           }
-        });
+        }),
+        );
         span.end();
       },
     );

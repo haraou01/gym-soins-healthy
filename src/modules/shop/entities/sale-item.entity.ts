@@ -16,6 +16,9 @@ export class SaleItem {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Index()
   @Column({ type: 'uuid' })
   saleId: string;

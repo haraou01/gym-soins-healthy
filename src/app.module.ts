@@ -17,6 +17,7 @@ import { IdempotencyModule } from './core/idempotency';
 import { OutboxModule } from './core/outbox';
 import { ObservabilityModule } from './core/observability';
 import { RetentionModule } from './core/retention';
+import { TenantModule } from './core/tenant';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { BookingModule } from './modules/booking/booking.module';
@@ -86,6 +87,9 @@ import { ShopModule } from './modules/shop/shop.module';
 
     // Rétention idempotency/outbox
     RetentionModule,
+
+    // Contexte tenant, memberships et isolation SaaS
+    TenantModule,
 
     // Métiers
     AuthModule,

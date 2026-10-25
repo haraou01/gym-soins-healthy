@@ -20,6 +20,7 @@ import {
 } from '../../../core/idempotency';
 import { CareSession } from '../entities/care-session.entity';
 import type { AssignPackageDto, ConsumeSessionDto } from '../dto/care.dto';
+import { requireTenantId } from '../../../core/tenant';
 
 export interface CareSessionResult {
   session: CareSession;
@@ -44,11 +45,16 @@ export class CareService {
   /** --- Catalogue des soins --- */
 
   async findAllCareServices(): Promise<CareServiceEntity[]> {
-    return this.careServiceRepository.find({ order: { createdAt: 'DESC' } });
+    return this.careServiceRepository.find({
+      where: { tenantId: requireTenantId() },
+      order: { createdAt: 'DESC' },
+    });
   }
 
   async findCareServiceById(id: string): Promise<CareServiceEntity> {
-    const careService = await this.careServiceRepository.findOne({ where: { id } });
+    const careService = await this.careServiceRepository.findOne({
+      where: { id, tenantId: requireTenantId() },
+    });
 
     if (!careService) {
       throw new NotFoundException(`Soin ${id} introuvable`);
@@ -58,13 +64,21 @@ export class CareService {
   }
 
   async createCareService(data: Partial<CareServiceEntity>): Promise<CareServiceEntity> {
-    const entity = this.careServiceRepository.create(data);
+    const { tenantId: _ignoredTenant, ...safeData } = data;
+    const entity = this.careServiceRepository.create({
+      ...safeData,
+      tenantId: requireTenantId(),
+    });
     return this.careServiceRepository.save(entity);
   }
 
   async updateCareService(id: string, data: Partial<CareServiceEntity>): Promise<CareServiceEntity> {
-    await this.findCareServiceById(id);
-    await this.careServiceRepository.update(id, data);
+    const careService = await this.findCareServiceById(id);
+    const { tenantId: _ignoredTenant, ...safeData } = data;
+    await this.careServiceRepository.update(
+      { id, tenantId: careService.tenantId },
+      safeData,
+    );
     return this.findCareServiceById(id);
   }
 
@@ -82,12 +96,14 @@ export class CareService {
    * l'insertion du pack forment une seule unité cohérente.
    */
   async assignPackage(dto: AssignPackageDto): Promise<ClientCarePackage> {
+    const tenantId = requireTenantId();
+
     return this.dataSource.transaction(async (manager) => {
       const careServiceRepository = manager.getRepository(CareServiceEntity);
       const packageRepository = manager.getRepository(ClientCarePackage);
 
       const careService = await careServiceRepository.findOne({
-        where: { id: dto.careServiceId },
+        where: { id: dto.careServiceId, tenantId },
       });
 
       if (!careService) {
@@ -107,6 +123,7 @@ export class CareService {
       }
 
       const packageEntity = packageRepository.create({
+        tenantId,
         clientId: dto.clientId,
         careServiceId: dto.careServiceId,
         totalSessions: dto.totalSessions,
@@ -120,7 +137,7 @@ export class CareService {
 
   async findPackagesByClient(clientId: string): Promise<ClientCarePackage[]> {
     return this.clientCarePackageRepository.find({
-      where: { clientId },
+      where: { clientId, tenantId: requireTenantId() },
       order: { createdAt: 'DESC' },
     });
   }
@@ -137,7 +154,8 @@ export class CareService {
   ): Promise<ClientCarePackage> {
     const usablePackage = await this.clientCarePackageRepository
       .createQueryBuilder('pack')
-      .where('pack.clientId = :clientId', { clientId })
+      .where('pack.tenantId = :tenantId', { tenantId: requireTenantId() })
+      .andWhere('pack.clientId = :clientId', { clientId })
       .andWhere('pack.careServiceId = :careServiceId', { careServiceId })
       .andWhere('pack.status = :status', {
         status: ClientCarePackageStatus.ACTIF,
@@ -171,6 +189,7 @@ export class CareService {
     dto: ConsumeSessionDto,
     idempotencyKey?: string,
   ): Promise<CareSessionResult> {
+    const tenantId = requireTenantId();
     const outcome = await this.dataSource.transaction(async (manager) => {
       return this.idempotencyService.execute(
         manager,
@@ -183,7 +202,7 @@ export class CareService {
       const sessionRepository = manager.getRepository(CareSession);
 
       const careService = await careServiceRepository.findOne({
-        where: { id: dto.careServiceId },
+        where: { id: dto.careServiceId, tenantId },
       });
 
       if (!careService) {
@@ -201,7 +220,8 @@ export class CareService {
       const usablePackages = await packageRepository
         .createQueryBuilder('pack')
         .setLock('pessimistic_write')
-        .where('pack.clientId = :clientId', { clientId: dto.clientId })
+        .where('pack.tenantId = :tenantId', { tenantId })
+        .andWhere('pack.clientId = :clientId', { clientId: dto.clientId })
         .andWhere('pack.careServiceId = :careServiceId', {
           careServiceId: dto.careServiceId,
         })
@@ -224,6 +244,7 @@ export class CareService {
       await packageRepository.save(carePackage);
 
       const session = sessionRepository.create({
+        tenantId,
         clientId: dto.clientId,
         careServiceId: dto.careServiceId,
         therapistId: dto.therapistId,
@@ -261,14 +282,14 @@ export class CareService {
 
   async findSessionsByClient(clientId: string): Promise<CareSession[]> {
     return this.careSessionRepository.find({
-      where: { clientId },
+      where: { clientId, tenantId: requireTenantId() },
       order: { timestamp: 'DESC' },
     });
   }
 
   async findSessionsByTherapist(therapistId: string): Promise<CareSession[]> {
     return this.careSessionRepository.find({
-      where: { therapistId },
+      where: { therapistId, tenantId: requireTenantId() },
       order: { timestamp: 'DESC' },
     });
   }

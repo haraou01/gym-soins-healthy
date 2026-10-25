@@ -6,6 +6,10 @@ import * as bcrypt from 'bcryptjs';
 export const TEST_ADMIN_EMAIL = 'admin.e2e@gymsoins.local';
 export const TEST_ADMIN_PASSWORD = 'AdminE2E123!';
 export const TEST_ADMIN_ROLE = 'SUPER_ADMIN';
+export const TEST_TENANT_ID = '00000000-0000-0000-0000-000000000001';
+export const TEST_RECEPTIONIST_EMAIL = 'receptionist.e2e@gymsoins.local';
+export const TEST_RECEPTIONIST_PASSWORD = 'ReceptionistE2E123!';
+export const TEST_RECEPTIONIST_ROLE = 'RECEPTIONIST';
 
 export const TEST_JWT_SECRET = 'e2e-jwt-secret-do-not-use-in-production';
 export const TEST_LICENSE_SECRET = 'e2e-license-secret-do-not-use-in-production';
@@ -144,15 +148,54 @@ async function seedRolesAndAdmin(client: Client): Promise<void> {
     );
   }
 
-  const passwordHash = await bcrypt.hash(TEST_ADMIN_PASSWORD, 10);
+  await seedUserMembership(client, {
+    email: TEST_ADMIN_EMAIL,
+    username: 'E2E Admin',
+    password: TEST_ADMIN_PASSWORD,
+    role: TEST_ADMIN_ROLE,
+  });
 
-  await client.query(
+  await seedUserMembership(client, {
+    email: TEST_RECEPTIONIST_EMAIL,
+    username: 'E2E Receptionist',
+    password: TEST_RECEPTIONIST_PASSWORD,
+    role: TEST_RECEPTIONIST_ROLE,
+  });
+}
+
+async function seedUserMembership(
+  client: Client,
+  input: { email: string; username: string; password: string; role: string },
+): Promise<void> {
+  const passwordHash = await bcrypt.hash(input.password, 10);
+
+  const userResult = await client.query(
     `INSERT INTO users (email, username, password_hash, role_id, is_active)
      VALUES ($1, $2, $3, (SELECT id FROM roles WHERE name = $4), TRUE)
      ON CONFLICT (email) DO UPDATE
        SET password_hash = EXCLUDED.password_hash,
            role_id = EXCLUDED.role_id,
-           is_active = TRUE`,
-    [TEST_ADMIN_EMAIL, 'E2E Admin', passwordHash, TEST_ADMIN_ROLE],
+           is_active = TRUE
+     RETURNING id`,
+    [input.email, input.username, passwordHash, input.role],
+  );
+
+  const userId = userResult.rows[0].id;
+  const tenantResult = await client.query(
+    `INSERT INTO tenants (id, slug, name, status)
+     VALUES ($1, 'legacy', 'Legacy tenant', 'ACTIVE')
+     ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`,
+    [TEST_TENANT_ID],
+  );
+  const tenantId = tenantResult.rows[0].id;
+
+  await client.query(
+    `INSERT INTO tenant_memberships ("tenantId", "userId", "roleId", status)
+     VALUES ($1, $2, (SELECT id FROM roles WHERE name = $3), 'ACTIVE')
+     ON CONFLICT ("tenantId", "userId") DO UPDATE
+       SET "roleId" = EXCLUDED."roleId",
+           status = 'ACTIVE'`,
+    [tenantId, userId, input.role],
   );
 }

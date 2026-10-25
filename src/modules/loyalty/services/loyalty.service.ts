@@ -11,6 +11,7 @@ import {
   LoyaltyTransaction,
   LoyaltyTransactionType,
 } from '../entities';
+import { requireTenantId } from '../../../core/tenant';
 
 export interface LoyaltyMovementInput {
   clientId: string;
@@ -57,7 +58,10 @@ export class LoyaltyService {
   /** --- Consultation --- */
 
   async findAllAccounts(): Promise<LoyaltyAccount[]> {
-    return this.accountRepository.find({ order: { createdAt: 'DESC' } });
+    return this.accountRepository.find({
+      where: { tenantId: requireTenantId() },
+      order: { createdAt: 'DESC' },
+    });
   }
 
   async getBalance(identifier: string): Promise<LoyaltyBalance> {
@@ -69,7 +73,7 @@ export class LoyaltyService {
     const account = await this.requireAccount(identifier);
 
     return this.transactionRepository.find({
-      where: { loyaltyAccountId: account.id },
+      where: { loyaltyAccountId: account.id, tenantId: account.tenantId },
       order: { createdAt: 'DESC' },
     });
   }
@@ -103,6 +107,7 @@ export class LoyaltyService {
     input: LoyaltyMovementInput,
     manager?: EntityManager,
   ): Promise<LoyaltyMovementResult> {
+    const tenantId = requireTenantId();
     const movement: NormalizedMovement = {
       clientId: input.clientId,
       email: input.clientEmail?.trim().toLowerCase() || null,
@@ -181,6 +186,7 @@ export class LoyaltyService {
     const repository = manager.getRepository(LoyaltyAccount);
 
     const account = repository.create({
+      tenantId: requireTenantId(),
       clientId: movement.clientId,
       clientEmail: movement.email,
       pointsBalance: movement.points,
@@ -223,7 +229,7 @@ export class LoyaltyService {
     }
 
     return this.accountRepository.findOne({
-      where: this.buildWhere(value),
+      where: this.buildWhere(value, requireTenantId()),
     });
   }
 
@@ -236,10 +242,13 @@ export class LoyaltyService {
     clientId: string,
     email: string | null,
   ): Promise<LoyaltyAccount | null> {
-    const where: FindOptionsWhere<LoyaltyAccount>[] = [{ clientId }];
+    const tenantId = requireTenantId();
+    const where: FindOptionsWhere<LoyaltyAccount>[] = [
+      { tenantId, clientId },
+    ];
 
     if (email) {
-      where.push({ clientEmail: email });
+      where.push({ tenantId, clientEmail: email });
     }
 
     return manager.getRepository(LoyaltyAccount).findOne({
@@ -248,11 +257,16 @@ export class LoyaltyService {
     });
   }
 
-  private buildWhere(value: string): FindOptionsWhere<LoyaltyAccount>[] {
-    const where: FindOptionsWhere<LoyaltyAccount>[] = [{ clientId: value }];
+  private buildWhere(
+    value: string,
+    tenantId: string,
+  ): FindOptionsWhere<LoyaltyAccount>[] {
+    const where: FindOptionsWhere<LoyaltyAccount>[] = [
+      { tenantId, clientId: value },
+    ];
 
     if (value.includes('@')) {
-      where.push({ clientEmail: value.toLowerCase() });
+      where.push({ tenantId, clientEmail: value.toLowerCase() });
     }
 
     return where;
@@ -268,7 +282,9 @@ export class LoyaltyService {
     },
   ): Promise<LoyaltyTransaction> {
     const repository = manager.getRepository(LoyaltyTransaction);
-    return repository.save(repository.create(data));
+    return repository.save(
+      repository.create({ ...data, tenantId: requireTenantId() }),
+    );
   }
 
   private normalizePoints(points: number): number {

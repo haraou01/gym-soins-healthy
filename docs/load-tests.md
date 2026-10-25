@@ -136,3 +136,55 @@ Points d'attention avant production :
 
 Aucune optimisation ne doit être engagée sans mesure sur l'infrastructure
 cible.
+
+---
+
+## Nouvelle mesure après isolation multi-tenant (2026-10-25)
+
+Les mesures ci-dessous ont été refaites après l'ajout :
+
+- validation d'adhésion par requête (`JwtStrategy`) ;
+- filtres `tenantId` dans les services ;
+- contraintes et index tenant ;
+- événements Outbox/SSE tenant-scoped.
+
+Elles restent **mono-tenant d'exécution** : le script utilise l'administrateur
+du tenant legacy. Aucune mesure de charge concurrente A+B n'a été exécutée.
+
+| Scénario | Requêtes | Concurrence | Throughput | p50 | p95 | p99 | Erreurs |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| booking-unique-100@10 | 100 | 10 | 265,25 req/s | 34 ms | 71 ms | 82 ms | 0 |
+| booking-conflict-100@10 | 100 | 10 | 195,31 req/s | 49 ms | 57 ms | 68 ms | 0 |
+| booking-unique-100@25 | 100 | 25 | 335,57 req/s | 71 ms | 92 ms | 101 ms | 0 |
+| booking-conflict-100@25 | 100 | 25 | 191,57 req/s | 120 ms | 159 ms | 181 ms | 0 |
+| booking-unique-100@50 | 100 | 50 | 328,95 req/s | 129 ms | 181 ms | 205 ms | 0 |
+| booking-conflict-100@50 | 100 | 50 | 202,02 req/s | 214 ms | 267 ms | 299 ms | 0 |
+| booking-unique-500@25 | 500 | 25 | 367,11 req/s | 67 ms | 75 ms | 83 ms | 0 |
+| booking-conflict-500@25 | 500 | 25 | 206,44 req/s | 119 ms | 135 ms | 140 ms | 0 |
+| booking-unique-500@50 | 500 | 50 | 379,94 req/s | 129 ms | 140 ms | 172 ms | 0 |
+| booking-conflict-500@50 | 500 | 50 | 213,40 req/s | 226 ms | 280 ms | 288 ms | 0 |
+| shop-sales-100@25 | 100 | 25 | 68,78 req/s | 302 ms | 520 ms | 555 ms | 0 |
+| shop-sales-500@50 | 500 | 50 | 70,52 req/s | 611 ms | 1118 ms | 1238 ms | 0 |
+| kds-orders-100@25 | 100 | 25 | 105,71 req/s | 208 ms | 322 ms | 408 ms | 0 |
+| kds-status-100@25 | 100 | 25 | 306,75 req/s | 79 ms | 95 ms | 102 ms | 0 |
+| kds-orders-500@50 | 500 | 50 | 107,67 req/s | 411 ms | 767 ms | 1334 ms | 0 |
+| kds-status-500@50 | 500 | 50 | 302,30 req/s | 160 ms | 185 ms | 209 ms | 0 |
+
+Outbox après charge :
+
+```text
+PENDING     : 0
+PROCESSING  : 0
+PROCESSED   : 1872
+FAILED      : 0
+db_connections : 10
+db_locks{waiting} : 0
+```
+
+### Interprétation
+
+- La validation d'adhésion par requête ajoute une lecture PostgreSQL par
+  requête authentifiée ; c'est le coût de la révocation immédiate.
+- Les débits Booking/Shop/KDS sont inférieurs à la mesure Phase 3.
+- Aucun lock en attente en fin de test.
+- Le multi-tenant concurrent A/B et multi-instance reste **NOT-TESTED**.

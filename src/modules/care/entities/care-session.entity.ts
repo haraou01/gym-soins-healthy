@@ -10,6 +10,9 @@ export class CareSession {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
   @Column()
   clientId: string;
 

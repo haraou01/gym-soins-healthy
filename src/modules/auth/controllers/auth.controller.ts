@@ -1,16 +1,33 @@
-import { Body, Controller, HttpCode, HttpStatus, Post, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import type { Request } from 'express';
 
-import { LoginDto, RegisterDto } from '../dtos';
+import { LoginDto, RegisterDto, SwitchTenantDto } from '../dtos';
 import { AuthRequestContext, AuthService } from '../auth.service';
 import { Public } from '../../../core/security/public.decorator';
 
-@Public()
+interface AuthenticatedRequest extends Request {
+  user?: {
+    id?: string;
+    email?: string;
+    tenantId?: string;
+  };
+}
+
 @Controller('api/v1/auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Public()
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
@@ -19,9 +36,11 @@ export class AuthController {
       dto.email,
       dto.password,
       this.requestContext(request),
+      dto.tenantId,
     );
   }
 
+  @Public()
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
@@ -29,12 +48,39 @@ export class AuthController {
     return this.authService.register(dto, this.requestContext(request));
   }
 
+  @Public()
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   refresh(@Body('refreshToken') refreshToken: string, @Req() request: Request) {
     return this.authService.refreshToken(
       refreshToken,
+      this.requestContext(request),
+    );
+  }
+
+  @Get('tenants')
+  async tenants(@Req() request: AuthenticatedRequest) {
+    if (!request.user?.id) {
+      throw new UnauthorizedException('Utilisateur non authentifié.');
+    }
+
+    return this.authService.getTenants(request.user.id);
+  }
+
+  @Post('switch-tenant')
+  @HttpCode(HttpStatus.OK)
+  async switchTenant(
+    @Body() dto: SwitchTenantDto,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    if (!request.user?.id) {
+      throw new UnauthorizedException('Utilisateur non authentifié.');
+    }
+
+    return this.authService.switchTenant(
+      request.user.id,
+      dto.tenantId,
       this.requestContext(request),
     );
   }

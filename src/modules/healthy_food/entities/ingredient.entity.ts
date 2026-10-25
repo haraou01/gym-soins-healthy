@@ -19,7 +19,10 @@ export class Ingredient {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar', length: 150, unique: true })
+  @Column({ name: 'tenantId', type: 'uuid' })
+  tenantId: string;
+
+  @Column({ type: 'varchar', length: 150 })
   name: string;
 
   @Column({ type: 'enum', enum: IngredientUnit })

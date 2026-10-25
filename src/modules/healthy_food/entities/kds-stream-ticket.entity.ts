@@ -21,7 +21,7 @@ export class KdsStreamTicket {
   @Column({ type: 'varchar', length: 32 })
   role: string;
 
-  @Column({ type: 'varchar', length: 64, default: 'default' })
+  @Column({ name: 'tenantId', type: 'uuid' })
   tenantId: string;
 
   @Column({ type: 'timestamp' })
