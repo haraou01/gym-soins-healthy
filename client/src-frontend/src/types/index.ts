@@ -474,6 +474,11 @@ export interface KitchenOrder {
   updatedAt: string;
 }
 
+export interface KdsStreamTicket {
+  ticket: string;
+  expiresAt: string;
+}
+
 export interface CreateIngredientInput {
   name: string;
   unit: IngredientUnit;

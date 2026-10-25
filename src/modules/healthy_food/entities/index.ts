@@ -8,3 +8,4 @@ export {
   KitchenOrderType,
   KITCHEN_ORDER_TRANSITIONS,
 } from './kitchen-order.entity';
+export { KdsStreamTicket } from './kds-stream-ticket.entity';

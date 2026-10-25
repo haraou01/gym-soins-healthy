@@ -8,3 +8,7 @@ export {
   type KitchenOrderCreatedEvent,
   type KitchenOrderCreatedItem,
 } from './kitchen-order-created.event';
+export {
+  KITCHEN_ORDER_STATUS_CHANGED_EVENT,
+  type KitchenOrderStatusChangedEvent,
+} from './kitchen-order-status-changed.event';

@@ -10,7 +10,9 @@ import { DataSource, EntityManager, In, QueryFailedError, Raw, Repository } from
 
 import {
   KITCHEN_ORDER_CREATED_EVENT,
+  KITCHEN_ORDER_STATUS_CHANGED_EVENT,
   type KitchenOrderCreatedEvent,
+  type KitchenOrderStatusChangedEvent,
 } from '../../../core/events';
 import {
   IdempotencyService,
@@ -554,16 +556,43 @@ export class HealthyFoodService {
     }
 
     // Une annulation rend les ingrédients consommés à la création de la commande.
-    if (dto.status === KitchenOrderStatus.ANNULE) {
-      return this.dataSource.transaction(async (manager) => {
+    // Le changement de statut et l'événement Outbox sont atomiques.
+    const previousStatus = order.status;
+    const outcome = await this.dataSource.transaction(async (manager) => {
+      if (dto.status === KitchenOrderStatus.ANNULE) {
         await this.restoreOrderIngredients(manager, order);
-        order.status = dto.status;
-        return manager.getRepository(KitchenOrder).save(order);
-      });
-    }
+      }
 
-    order.status = dto.status;
-    return this.kitchenOrderRepository.save(order);
+      order.status = dto.status;
+      const savedOrder = await manager.getRepository(KitchenOrder).save(order);
+
+      const event: KitchenOrderStatusChangedEvent = {
+        orderId: savedOrder.id,
+        clientId: savedOrder.clientId,
+        previousStatus,
+        status: savedOrder.status,
+        type: savedOrder.type,
+        updatedAt:
+          savedOrder.updatedAt instanceof Date
+            ? savedOrder.updatedAt.toISOString()
+            : String(savedOrder.updatedAt ?? new Date().toISOString()),
+      };
+
+      const outboxEventId = await this.outboxService.append(manager, {
+        eventType: KITCHEN_ORDER_STATUS_CHANGED_EVENT,
+        aggregateType: 'kitchen_order',
+        aggregateId: savedOrder.id,
+        payload: event,
+      });
+
+      return { order: savedOrder, outboxEventId };
+    });
+
+    await this.outboxService
+      .dispatchOne(outcome.outboxEventId)
+      .catch(() => undefined);
+
+    return outcome.order;
   }
 
   /**

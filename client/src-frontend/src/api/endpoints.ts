@@ -27,6 +27,7 @@ import type {
   Ingredient,
   KitchenOrder,
   KitchenOrderStatus,
+  KdsStreamTicket,
   LoginResponse,
   MaintenanceCostSummary,
   MaintenanceTicket,
@@ -347,6 +348,9 @@ export const healthyFoodAPI = {
       `/api/v1/healthy-food/orders/${encodeURIComponent(id)}/status`,
       { status },
     ),
+
+  createKdsStreamTicket: () =>
+    api.post<KdsStreamTicket>('/api/v1/healthy-food/kds/stream-ticket'),
 };
 
 export const settingsAPI = {

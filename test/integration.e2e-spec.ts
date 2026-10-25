@@ -11,6 +11,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/app.setup';
 import { OutboxService } from '../src/core/outbox';
 import { AuthAuditService } from '../src/modules/auth/auth-audit.service';
+import { KdsStreamTicketService } from '../src/modules/healthy_food/services/kds-stream-ticket.service';
 import {
   getTestDatabaseSettings,
   resetTestDatabase,
@@ -397,6 +398,16 @@ describe('GymSoinsHealthy — validation E2E', () => {
       expect(clientOrders.body).toHaveLength(1);
       expect(clientOrders.body[0].id).toBe(orderId);
       expect(clientOrders.body[0].status).toBe('PRET');
+
+      const dataSource = app.get(DataSource);
+      const statusEvents = await dataSource.query(
+        `SELECT COUNT(*)::int AS count FROM outbox_events
+         WHERE "eventType" = 'kitchen.order.status_changed'
+           AND "aggregateId" = $1`,
+        [orderId],
+      );
+
+      expect(statusEvents[0].count).toBeGreaterThanOrEqual(2);
     });
 
     it('Healthy Food — restaure les stocks à l’annulation d’une commande', async () => {
@@ -917,6 +928,53 @@ describe('GymSoinsHealthy — validation E2E', () => {
       ).rejects.toMatchObject({
         driverError: { code: '23P01' },
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 3quinquies. KDS SSE
+  // -------------------------------------------------------------------------
+  describe('3quinquies. KDS SSE', () => {
+    it('crée un ticket court et le consomme une seule fois', async () => {
+      const ticketService = app.get(KdsStreamTicketService);
+      const created = await ticketService.create('e2e-kds-user', 'CHEF');
+
+      const firstUse = await ticketService.consume(created.ticket);
+      expect(firstUse).toMatchObject({
+        userId: 'e2e-kds-user',
+        role: 'CHEF',
+        tenantId: 'default',
+      });
+
+      const replay = await ticketService.consume(created.ticket);
+      expect(replay).toBeNull();
+    });
+
+    it('protège la création de ticket par authentification et rôle KDS', async () => {
+      await http
+        .post('/api/v1/healthy-food/kds/stream-ticket')
+        .expect(401);
+
+      const jwtService = app.get(JwtService, { strict: false });
+      const receptionistToken = jwtService.sign({
+        sub: 'e2e-kds-receptionist',
+        email: 'receptionist.e2e@gymsoins.local',
+        role: 'RECEPTIONIST',
+      });
+
+      await http
+        .post('/api/v1/healthy-food/kds/stream-ticket')
+        .set('Authorization', `Bearer ${receptionistToken}`)
+        .expect(403);
+
+      const ticket = await http
+        .post('/api/v1/healthy-food/kds/stream-ticket')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .expect(200);
+
+      expect(typeof ticket.body.ticket).toBe('string');
+      expect(ticket.body.ticket.length).toBeGreaterThan(20);
+      expect(ticket.body.expiresAt).toBeTruthy();
     });
   });
 

@@ -248,6 +248,19 @@ Le worker expose :
 
 Il gère `SIGTERM`/`SIGINT`, reprend les `PROCESSING` orphelins et utilise PostgreSQL comme source de vérité. Redis n'est pas requis.
 
+### KDS temps réel
+
+- Ticket court à usage unique : `POST /api/v1/healthy-food/kds/stream-ticket` (SUPER_ADMIN/CHEF).
+- Flux SSE : `GET /api/v1/healthy-food/kds/stream?ticket=...`.
+- Événements : `kitchen.order.created`, `kitchen.order.status_changed`, `resync`, `ping`.
+- Aucun JWT longue durée dans l’URL.
+- Reconnexion client avec backoff et nouveau ticket.
+- Fallback polling 10 s si SSE indisponible.
+- PostgreSQL reste la source de vérité ; le SSE ne fait que notifier.
+- Métriques : `kds_sse_connections_total`, `kds_sse_disconnects_total`, `kds_sse_active_connections`, `kds_events_published_total`, `kds_poll_errors_total`.
+
+Le modèle actuel est mono-établissement : le tenant par défaut est `default`. Le filtrage multi-tenant est préparé dans le ticket et le flux, mais devra être relié à un modèle tenant réel.
+
 ### Observabilité
 
 - Logs JSON structurés avec `requestId`.

@@ -18,6 +18,12 @@ interface HistogramEntry {
   buckets: Map<number, number>;
 }
 
+interface GaugeEntry {
+  name: string;
+  labels: MetricLabels;
+  value: number;
+}
+
 /**
  * Registre de métriques en mémoire, sans dépendance externe.
  * Les métriques sont exposées au format Prometheus par `/api/v1/observability/metrics`.
@@ -25,6 +31,7 @@ interface HistogramEntry {
 export class MetricsRegistry {
   private readonly counters = new Map<string, CounterEntry>();
   private readonly histograms = new Map<string, HistogramEntry>();
+  private readonly gauges = new Map<string, GaugeEntry>();
 
   inc(name: string, labels: MetricLabels = {}, value = 1): void {
     const key = this.key(name, labels);
@@ -62,10 +69,22 @@ export class MetricsRegistry {
     }
   }
 
+  setGauge(name: string, value: number, labels: MetricLabels = {}): void {
+    this.gauges.set(this.key(name, labels), { name, labels, value });
+  }
+
   render(): string {
     const lines: string[] = [];
 
     for (const entry of [...this.counters.values()].sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
+      lines.push(
+        `${entry.name}${this.formatLabels(entry.labels)} ${entry.value}`,
+      );
+    }
+
+    for (const entry of [...this.gauges.values()].sort((a, b) =>
       a.name.localeCompare(b.name),
     )) {
       lines.push(

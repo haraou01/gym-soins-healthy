@@ -152,6 +152,9 @@ const ORDER_TRANSITIONS: Record<KitchenOrderStatus, KitchenOrderStatus[]> = {
   ANNULE: [],
 };
 
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000';
+
 const TABS: { id: FoodTab; label: string; icon: ReactNode }[] = [
   { id: 'ingredients', label: 'Stocks & Ingrédients', icon: <Carrot size={16} /> },
   { id: 'dishes', label: 'Plats & Recettes', icon: <Soup size={16} /> },
@@ -232,6 +235,7 @@ export default function HealthyFoodPage() {
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [kdsRealtime, setKdsRealtime] = useState(false);
 
   const fetchAll = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -277,9 +281,9 @@ export default function HealthyFoodPage() {
     }
   }, []);
 
-  // KDS : rafraîchissement silencieux périodique pour suivre la cuisine.
+  // KDS : fallback polling uniquement si le SSE n'est pas connecté.
   useEffect(() => {
-    if (activeTab !== 'orders') {
+    if (activeTab !== 'orders' || kdsRealtime) {
       return;
     }
 
@@ -288,6 +292,86 @@ export default function HealthyFoodPage() {
     }, 10_000);
 
     return () => window.clearInterval(interval);
+  }, [activeTab, fetchOrders, kdsRealtime]);
+
+  // KDS : SSE authentifié par ticket court, reconnexion avec backoff.
+  useEffect(() => {
+    if (activeTab !== 'orders') {
+      setKdsRealtime(false);
+      return;
+    }
+
+    let closed = false;
+    let source: EventSource | null = null;
+    let retryTimer: number | undefined;
+    let attempt = 0;
+
+    const scheduleReconnect = () => {
+      if (closed) {
+        return;
+      }
+
+      const delay = Math.min(30_000, 1_000 * 2 ** attempt);
+      attempt += 1;
+      retryTimer = window.setTimeout(() => {
+        void connect();
+      }, delay);
+    };
+
+    const connect = async () => {
+      try {
+        const { data } = await healthyFoodAPI.createKdsStreamTicket();
+
+        if (closed) {
+          return;
+        }
+
+        source = new EventSource(
+          `${API_BASE_URL}/api/v1/healthy-food/kds/stream?ticket=${encodeURIComponent(data.ticket)}`,
+        );
+
+        source.onopen = () => {
+          attempt = 0;
+          setKdsRealtime(true);
+          void fetchOrders(true);
+        };
+
+        source.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data) as {
+              eventType?: string;
+            };
+
+            if (payload.eventType && payload.eventType !== 'ping') {
+              void fetchOrders(true);
+            }
+          } catch {
+            // Ignore les messages non JSON / keep-alive.
+          }
+        };
+
+        source.onerror = () => {
+          setKdsRealtime(false);
+          source?.close();
+          source = null;
+          scheduleReconnect();
+        };
+      } catch {
+        setKdsRealtime(false);
+        scheduleReconnect();
+      }
+    };
+
+    void connect();
+
+    return () => {
+      closed = true;
+      source?.close();
+      if (retryTimer !== undefined) {
+        window.clearTimeout(retryTimer);
+      }
+      setKdsRealtime(false);
+    };
   }, [activeTab, fetchOrders]);
 
   const lowStock = useMemo(
@@ -1806,7 +1890,9 @@ export default function HealthyFoodPage() {
                   <div>
                     <h2 className="font-semibold text-content">Service</h2>
                     <p className="text-xs text-content-subtle">
-                      Commandes actives par étape · actualisation 10 s.
+                      {kdsRealtime
+                        ? 'Commandes actives · temps réel SSE.'
+                        : 'Commandes actives · fallback polling 10 s.'}
                     </p>
                   </div>
                   <Badge variant="warning" className="gap-1">
