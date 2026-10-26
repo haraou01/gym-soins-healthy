@@ -144,6 +144,21 @@ jobs:
           POSTGRES_DATABASE: gymsoins_restore_check
         run: npm run db:migrate
 
+      - name: Restore runtime grants on restored database
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        run: |
+          set -euo pipefail
+          node scripts/ci-db-guard.js gymsoins_restore_check write
+          psql \
+            -h 127.0.0.1 \
+            -p 55432 \
+            -U gymsoins \
+            -d gymsoins_restore_check \
+            -v ON_ERROR_STOP=1 \
+            -1 \
+            -f scripts/restore-runtime-grants.sql
+
       - name: Verify restore
         env:
           POSTGRES_DATABASE: gymsoins_backup_source
