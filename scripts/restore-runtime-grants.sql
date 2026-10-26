@@ -1,6 +1,7 @@
 -- Restaure les ACL du rôle runtime applicatif sur la base éphémère de
 -- restauration. Ce fichier ne rejoue pas la migration 027 : il ne contient que
--- les GRANT explicitement définis pour gymsoins_app par 027 et 028.
+-- les GRANT explicitement définis pour gymsoins_app par 027 et 028, ainsi que
+-- le REVOKE de schema_migrations.
 --
 -- Le dump et le restore utilisent --no-privileges. Les migrations déjà
 -- appliquées ne sont pas rejouées, donc les ACL doivent être rétablies ici.

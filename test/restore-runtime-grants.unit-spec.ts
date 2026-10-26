@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const sql = readFileSync(
-  join(process.cwd(), 'scripts', 'restore-runtime-grants.sql'),
+  join(__dirname, '..', 'scripts', 'restore-runtime-grants.sql'),
   'utf8',
 );
 
@@ -84,7 +84,7 @@ describe('restore-runtime-grants.sql', () => {
     expect(sql).toMatch(
       /REVOKE ALL ON schema_migrations FROM gymsoins_app;/,
     );
-    expect(sql).not.toMatch(/GRANT[^;]*schema_migrations/i);
+    expect(sql).not.toMatch(/^\s*GRANT\b[^;]*schema_migrations/im);
   });
 
   it('ne modifie aucun rôle global et n’accorde aucun attribut', () => {
@@ -99,6 +99,12 @@ describe('restore-runtime-grants.sql', () => {
   it('n’accorde ni GRANT ALL ni privilège de séquence', () => {
     expect(sql).not.toMatch(/\bGRANT\s+ALL\b/i);
     expect(sql).not.toMatch(/\bSEQUENCE\b/i);
+  });
+
+  it('limite les grants au rôle gymsoins_app', () => {
+    expect(sql).not.toMatch(/\bTO\s+PUBLIC\b/i);
+    expect(sql).not.toMatch(/\bTO\s+gymsoins_worker\b/i);
+    expect(sql).not.toMatch(/\bTO\s+gymsoins_retention\b/i);
   });
 
   it('ne détruit aucun objet', () => {
